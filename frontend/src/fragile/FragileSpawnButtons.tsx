@@ -4,10 +4,8 @@
  * The meter matters for the demo: without it, a break looks like a bug. Showing the clench
  * climbing toward the 85% line makes the cause legible before the egg goes.
  */
-import { useEffect, useState } from "react";
-import { useEmgSocket } from "../providers/EmgSocket";
 import { useEditor } from "../store/editor";
-import { CRACK_FORCE, FRAGILE_PREFIX, makeEgg, makeWillow } from "./fragileGeometry";
+import { FRAGILE_PREFIX, makeEgg, makeWillow } from "./fragileGeometry";
 
 const PANEL: React.CSSProperties = {
   position: "fixed", bottom: 16, left: 16, zIndex: 20,
@@ -30,14 +28,6 @@ export default function FragileSpawnButtons() {
   const addObject = useEditor((s) => s.addObject);
   const select = useEditor((s) => s.select);
   const objects = useEditor((s) => s.objects);
-  const emg = useEmgSocket();
-  const [force, setForce] = useState(0);
-
-  useEffect(() => {
-    const id = setInterval(() => setForce(emg.getData()?.force ?? 0), 80);
-    return () => clearInterval(id);
-  }, [emg]);
-
   const spawn = (kind: "egg" | "willow") => {
     const id = addObject({
       geometry: "custom",
@@ -55,27 +45,12 @@ export default function FragileSpawnButtons() {
     select(id);
   };
 
-  const risk = Math.min(force / CRACK_FORCE, 1);
-  const danger = force >= CRACK_FORCE;
-
   return (
     <div style={PANEL}>
       <div style={{ fontWeight: 700, fontSize: 12, letterSpacing: 1, marginBottom: 8 }}>FRAGILE</div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+      <div style={{ display: "flex", gap: 8 }}>
         <button style={BTN} onClick={() => spawn("egg")}>Egg</button>
         <button style={BTN} onClick={() => spawn("willow")}>One-wish willow</button>
-      </div>
-      <div style={{ fontSize: 11, opacity: 0.75, marginBottom: 4 }}>
-        {danger ? "CRACKING" : `crack at ${Math.round(CRACK_FORCE * 100)}% clench`}
-      </div>
-      <div style={{ height: 7, borderRadius: 4, background: "rgba(255,255,255,0.14)", overflow: "hidden" }}>
-        <div
-          style={{
-            height: "100%", width: `${risk * 100}%`,
-            background: danger ? "#ff3b30" : risk > 0.75 ? "#ffb454" : "#7dd3fc",
-            transition: "width 80ms linear",
-          }}
-        />
       </div>
     </div>
   );

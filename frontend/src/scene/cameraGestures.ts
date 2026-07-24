@@ -92,9 +92,9 @@ export function softDeadzone(value: number, deadzone: number): number {
 /** Smoothed dolly state. Module-scoped because there is exactly one camera. */
 let dollyVel = 0;
 /** EMA factor for the zoom rate — lower is smoother and laggier. */
-const DOLLY_SMOOTH = 0.35;
+const DOLLY_SMOOTH = 0.6;
 /** Max per-frame pinch delta accepted. Bigger jumps are tracking glitches, not intent. */
-const DOLLY_CLAMP = 0.08;
+const DOLLY_CLAMP = 0.16;
 /** Camera distance limits, so a zoom cannot end up inside the object or out in the void. */
 const MIN_DIST = 1.2;
 const MAX_DIST = 22;
@@ -117,12 +117,12 @@ export function orbitDolly(delta: number): void {
   const cam = ctrl.object as THREE.Camera & { position: THREE.Vector3 };
   const target = ctrl.target as THREE.Vector3;
   const dist = cam.position.distanceTo(target);
-  const next = dist / Math.exp(dollyVel * 1.6);
+  const next = dist / Math.exp(dollyVel * 3.4);
   if ((next < MIN_DIST && dollyVel > 0) || (next > MAX_DIST && dollyVel < 0)) {
     dollyVel = 0;
     return;
   }
-  ctrl.dollyIn(Math.exp(dollyVel * 1.6));
+  ctrl.dollyIn(Math.exp(dollyVel * 3.4));
   ctrl.update();
 }
 

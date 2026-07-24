@@ -4,7 +4,9 @@
  * so this plain DOM overlay can live *outside* the Canvas without prop drilling. Designed to
  * be legible from a few feet away for a stage demo.
  */
+import { useEffect, useState } from "react";
 import { useFusionStatus } from "../control/useFusion";
+import { useEmgSocket } from "../providers/EmgSocket";
 
 const MODE_LABEL: Record<string, string> = {
   select: "SELECT",
@@ -30,8 +32,16 @@ const MODE_COLOR: Record<string, string> = {
 
 /** Fixed-position force meter + mode/calibration/hit-target-held readout for a stage demo. */
 export default function ForceHUD() {
-  const { interactionMode, force, calibrated, connectionStatus, hasHit, hoveredObjectId, heldObjectId, pinProgress, pinningId } =
+  const { interactionMode, calibrated, connectionStatus, hasHit, hoveredObjectId, heldObjectId, pinProgress, pinningId } =
     useFusionStatus();
+  // Read EMG straight from the socket. useFusionStatus.force is zeroed outside "warp" mode, so
+  // this meter sat at 0% during grab/carry and looked like the EMG stream was dead.
+  const emg = useEmgSocket();
+  const [force, setForce] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setForce(emg.getData()?.force ?? 0), 50);
+    return () => clearInterval(id);
+  }, [emg]);
   const pct = Math.round(Math.min(1, Math.max(0, force)) * 100);
   const modeColor = MODE_COLOR[interactionMode] ?? "#6b7280";
 

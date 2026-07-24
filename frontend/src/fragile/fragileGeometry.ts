@@ -80,7 +80,10 @@ export function makeWillow(scale = 0.5): SerializableGeometry {
   puff.translate(0, trunkH - 0.52 * scale, 0);
   parts.push(puff);
 
-  const merged = mergeGeometries(parts, false);
+  // mergeGeometries requires every input to agree on indexing. CylinderGeometry is indexed
+  // and IcosahedronGeometry is not, so merging them raw returns null and the spawn threw --
+  // which is why the willow never appeared. Flatten them all first.
+  const merged = mergeGeometries(parts.map((p) => (p.getIndex() ? p.toNonIndexed() : p)), false);
   if (!merged) throw new Error("makeWillow: geometry merge failed");
   merged.computeVertexNormals();
   return bufferGeometryToSerializable(merged);
@@ -111,4 +114,4 @@ export function makeShard(size = 0.16, seed = 0): SerializableGeometry {
 /** Names that mark an object as breakable, and the force fraction that cracks it. */
 export const FRAGILE_PREFIX = "fragile:";
 /** Clench fraction above which a held fragile object breaks. */
-export const CRACK_FORCE = 0.85;
+export const CRACK_FORCE = 0.5;
