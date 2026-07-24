@@ -31,7 +31,7 @@ import { useEmgSocket } from "../providers/EmgSocket";
 import { useSkeleton } from "../hands/useSkeleton";
 import { useEditor } from "../store/editor";
 import { applyBrush } from "../sculpt/brush";
-import { grab, release, pin } from "../physics/PhysicsWorld";
+import { grab, release, pin, getBodyPosition } from "../physics/PhysicsWorld";
 import { BRUSH_RADIUS } from "../contracts";
 import { useFusionStatus } from "./fusionStatus";
 import { useHandState } from "./useHandState";
@@ -51,6 +51,14 @@ export interface FusionFrame {
 const PIN_RADIUS = 0.15;
 /** Seconds the carry point must stay within `PIN_RADIUS` before auto-pinning. */
 const PIN_DURATION = 1.5;
+/** Smoothing for the carried object's position (ShapeShift lerps ~0.1; lower = smoother/laggier). */
+const CARRY_LERP = 0.2;
+/** Hand-size depth → push/pull sensitivity along the view ray while carrying. */
+const DEPTH_SENS = 4;
+/** Per-frame carry delta → release/throw velocity (units/sec). */
+const THROW_GAIN = 40;
+/** Twist-to-rotate deadzone (radians): reject hand-angle jitter so a held object doesn't spin. */
+const ROT_DEADZONE = 0.045;
 /** Sculpt writes are throttled to roughly this many Hz to keep BVH rebuilds affordable. */
 const SCULPT_HZ = 30;
 /** Warm emissive color clay ramps toward as sculpt force rises. */
@@ -97,6 +105,12 @@ export function useFusion(): FusionFrame {
   const wasPinching = useRef(false);
   /** Baseline hand roll angle at grab-start, for frame-to-frame delta-rotation while carrying. */
   const lastHandAngle = useRef<number | null>(null);
+  /** ShapeShift-style carry state: camera-facing drag plane, grab offset, and smoothed carry point. */
+  const dragPlane = useRef(new THREE.Plane());
+  const dragOffset = useRef(new THREE.Vector3());
+  const initialHandDepth = useRef(0);
+  const carryPos = useRef(new THREE.Vector3());
+  const lastCarryPos = useRef(new THREE.Vector3());
 
   // `useSkeleton` is a hook and must be called at the top level on every render, not from
   // inside the `useFrame` callback. Vision arrives at camera-capture cadence (well under
@@ -188,51 +202,77 @@ export function useFusion(): FusionFrame {
         }
       }
     } else if (interactionMode === "select" || interactionMode === "physics") {
+      // Carry mechanic mirrors ShapeShift's ThreeRenderer drag: on grab, fix a camera-facing
+      // plane through the object and record the grab offset; each frame move the object to
+      // ray∩plane + offset (+ hand-depth push/pull), smoothed with a position lerp so a noisy
+      // hand cursor doesn't jitter the object. No raw ray-hit-follow (that fed back on itself).
       try {
         if (!heldId.current) {
           if (hasHit && hitObjectId && hand.isPinching) {
-            grab(hitObjectId, [handWorldPos.x, handWorldPos.y, handWorldPos.z]);
+            const bp = getBodyPosition(hitObjectId);
+            const objWorld = bp ? new THREE.Vector3(bp[0], bp[1], bp[2]) : (hitWorld ?? handWorldPos).clone();
+            const camForward = camera.getWorldDirection(new THREE.Vector3());
+            dragPlane.current.setFromNormalAndCoplanarPoint(camForward, objWorld);
+            raycaster.setFromCamera(new THREE.Vector2(hand.cursorNdc.x, hand.cursorNdc.y), camera);
+            const planePt = new THREE.Vector3();
+            if (raycaster.ray.intersectPlane(dragPlane.current, planePt)) {
+              dragOffset.current.copy(objWorld).sub(planePt);
+            } else {
+              dragOffset.current.set(0, 0, 0);
+            }
+            initialHandDepth.current = hand.depthProxy;
+            carryPos.current.copy(objWorld);
+            lastCarryPos.current.copy(objWorld);
+            grab(hitObjectId, [objWorld.x, objWorld.y, objWorld.z]);
             heldId.current = hitObjectId;
-            lastHandWorldPos.current.copy(handWorldPos);
             holdStartPos.current = null;
             lastHandAngle.current = hand.handAngle;
           }
         } else {
           const held = heldId.current;
           if (!hand.isPinching) {
-            const velocity = handWorldPos.clone().sub(lastHandWorldPos.current);
+            const velocity = carryPos.current.clone().sub(lastCarryPos.current).multiplyScalar(THROW_GAIN);
             release(held, [velocity.x, velocity.y, velocity.z]);
             heldId.current = null;
             holdStartPos.current = null;
             lastHandAngle.current = null;
           } else {
-            grab(held, [handWorldPos.x, handWorldPos.y, handWorldPos.z]);
-            lastHandWorldPos.current.copy(handWorldPos);
+            // Follow the drag plane, smoothed. lastCarryPos is captured before the lerp so the
+            // per-frame delta doubles as throw velocity on release.
+            raycaster.setFromCamera(new THREE.Vector2(hand.cursorNdc.x, hand.cursorNdc.y), camera);
+            const target = new THREE.Vector3();
+            if (raycaster.ray.intersectPlane(dragPlane.current, target)) {
+              target.add(dragOffset.current);
+              const deltaDepth = initialHandDepth.current - hand.depthProxy;
+              target.add(raycaster.ray.direction.clone().multiplyScalar(deltaDepth * DEPTH_SENS));
+              lastCarryPos.current.copy(carryPos.current);
+              carryPos.current.lerp(target, CARRY_LERP);
+              grab(held, [carryPos.current.x, carryPos.current.y, carryPos.current.z]);
+            }
 
-            // Twist-to-rotate: apply the hand's frame-to-frame roll delta about the camera's
-            // view axis, composed onto the object's current orientation (fine rotation while
-            // carrying — additive to the drag-plane translation above, not a replacement).
+            // Twist-to-rotate about the view axis, deadzoned to reject hand-angle jitter.
             if (lastHandAngle.current !== null) {
               const deltaAngle = normalizeAngleDelta(hand.handAngle - lastHandAngle.current);
-              const heldObj = editor.objects.find((o) => o.id === held);
-              if (heldObj && deltaAngle !== 0) {
-                const camForward = new THREE.Vector3();
-                camera.getWorldDirection(camForward);
-                const deltaQuat = new THREE.Quaternion().setFromAxisAngle(camForward, deltaAngle);
-                const currentQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(...heldObj.rotation));
-                const nextQuat = deltaQuat.multiply(currentQuat);
-                const nextEuler = new THREE.Euler().setFromQuaternion(nextQuat);
-                editor.updateTransform(held, { rotation: [nextEuler.x, nextEuler.y, nextEuler.z] });
+              if (Math.abs(deltaAngle) > ROT_DEADZONE) {
+                const heldObj = editor.objects.find((o) => o.id === held);
+                if (heldObj) {
+                  const camForward = camera.getWorldDirection(new THREE.Vector3());
+                  const deltaQuat = new THREE.Quaternion().setFromAxisAngle(camForward, deltaAngle);
+                  const currentQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(...heldObj.rotation));
+                  const nextEuler = new THREE.Euler().setFromQuaternion(deltaQuat.multiply(currentQuat));
+                  editor.updateTransform(held, { rotation: [nextEuler.x, nextEuler.y, nextEuler.z] });
+                }
+                lastHandAngle.current = hand.handAngle;
               }
             }
-            lastHandAngle.current = hand.handAngle;
 
+            // Hold-to-pin, judged on the smoothed carry position.
             const now = state.clock.getElapsedTime();
             if (!holdStartPos.current) {
-              holdStartPos.current = handWorldPos.clone();
+              holdStartPos.current = carryPos.current.clone();
               holdStartTime.current = now;
-            } else if (holdStartPos.current.distanceTo(handWorldPos) > PIN_RADIUS) {
-              holdStartPos.current = handWorldPos.clone();
+            } else if (holdStartPos.current.distanceTo(carryPos.current) > PIN_RADIUS) {
+              holdStartPos.current = carryPos.current.clone();
               holdStartTime.current = now;
             } else {
               const progress = Math.min((now - holdStartTime.current) / PIN_DURATION, 1);

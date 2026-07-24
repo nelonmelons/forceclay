@@ -247,6 +247,14 @@ export function pin(id: string): void {
   }
 }
 
+/** Current world translation of object `id`'s rigid body, or null if not registered. */
+export function getBodyPosition(id: string): [number, number, number] | null {
+  const body = bodies.get(id);
+  if (!body) return null;
+  const t = body.translation();
+  return [t.x, t.y, t.z];
+}
+
 /**
  * Ergonomic hook form of the module-level grab/release/squash/pin API, for consumers (like
  * `useFusion`) that prefer hook-style access over importing the functions directly.
