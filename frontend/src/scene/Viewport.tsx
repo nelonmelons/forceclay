@@ -50,15 +50,25 @@ function OrbitDisableOnHandActivity() {
 export default function Viewport({ children }: ViewportProps) {
   return (
     <Canvas
-      shadows
       style={{ position: "fixed", inset: 0, width: "100vw", height: "100vh", display: "block" }}
       onPointerMissed={() => useEditor.getState().select(null)}
     >
+      <color attach="background" args={["#f4f5f7"]} />
       <PerspectiveCamera makeDefault position={[0, 3, 5]} fov={50} onUpdate={(c) => c.lookAt(0, 0, 0)} />
       <OrbitControls makeDefault enableDamping ref={(instance) => registerOrbitControls(instance)} />
-      <ambientLight intensity={0.6} />
-      <directionalLight position={[5, 8, 5]} intensity={1} castShadow />
-      <Grid args={[20, 20]} position={[0, 0, 0]} cellColor="#444" sectionColor="#888" fadeDistance={25} infiniteGrid />
+      {/* Flat, shadowless "playground" lighting: a bright ambient fill plus a soft hemisphere
+          and a low-intensity directional (no castShadow) so shapes still read gentle form. */}
+      <ambientLight intensity={0.9} />
+      <hemisphereLight args={["#ffffff", "#dfe3ea", 0.6]} />
+      <directionalLight position={[5, 8, 5]} intensity={0.35} />
+      <Grid
+        args={[20, 20]}
+        position={[0, 0, 0]}
+        cellColor="#d8dce3"
+        sectionColor="#b9c0cc"
+        fadeDistance={25}
+        infiniteGrid
+      />
       <PhysicsWorld>{children}</PhysicsWorld>
       <OrbitDisableOnHandActivity />
     </Canvas>

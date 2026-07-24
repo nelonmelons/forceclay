@@ -69,11 +69,12 @@ export interface ClayMeshProps {
  * transform of its own — callers place it via a wrapping `<group>`/`<RigidBody>`.
  * @remarks Reused by both `ClayObject` (standalone) and `PhysicsWorld`'s `SceneBody` so
  * sculpted custom geometry and the emissive heat-glow render identically in both paths, and
- * `useFusion`'s raycast can resolve `mesh.userData.objectId` regardless of which owns it. Draws
- * a drei `<Edges>` outline when this object is the store's `selectedId`, so selection is
- * visible regardless of `interactionMode`. Also draws a gold `<Edges>` "pinch to pick up" cue
- * (ShapeShift's hover highlight) when the hand cursor ray is hovering this object in a
- * grab-capable mode — distinct from the red delete-highlight and the blue selection outline.
+ * `useFusion`'s raycast can resolve `mesh.userData.objectId` regardless of which owns it.
+ * Selection/hover/grab/delete states are surfaced by driving the mesh's own `emissive` (not a
+ * drei `<Edges>` outline, which does not render in this project); priority is delete(red) >
+ * grabbed(cyan) > hover(gold) > selected(blue) > the object's own emissive. A thin darker-tint
+ * `WireframeGeometry` overlay (rendered as a non-raycasting `<lineSegments>` sibling) gives every
+ * shape a subtle "lines/grid" edge on top of its pastel fill.
  */
 export function ClayMesh({ object, meshRef, deleteHighlight, onClick }: ClayMeshProps) {
   // Custom geometry is rebuilt whenever its buffers change (sculpt edits); primitives rebuild on param change.
@@ -98,30 +99,36 @@ export function ClayMesh({ object, meshRef, deleteHighlight, onClick }: ClayMesh
   // hover(gold) > selected(blue) > the object's own emissive.
   let emissiveColor = object.material.emissive;
   let emissiveIntensity = object.material.emissiveIntensity;
+  // Bumped vs. the original dark-theme values: the brighter shadowless lighting + light pastel
+  // background wash out lower emissive intensities, so highlights need more headroom to still
+  // read clearly (esp. gold hover against light fills).
   if (deleteHighlight) {
     emissiveColor = "#ff1a1a";
-    emissiveIntensity = 0.85;
+    emissiveIntensity = 1.1;
   } else if (isGrabbed) {
     emissiveColor = "#22e0ff";
-    emissiveIntensity = 0.9;
+    emissiveIntensity = 1.15;
   } else if (isGoldHover) {
     emissiveColor = "#ffcc33";
-    emissiveIntensity = 0.8;
+    emissiveIntensity = 1.1;
   } else if (isSelected) {
     emissiveColor = "#4dabf7";
-    emissiveIntensity = 0.55;
+    emissiveIntensity = 0.75;
   }
 
+  // Thin wireframe/edge-line overlay for the "lines/grid" playground look. Built directly from
+  // the same geometry via THREE.WireframeGeometry (drei's <Edges> does not render in this
+  // project) and rendered as a sibling <lineSegments>, so it moves/scales in lockstep with the
+  // solid mesh with no extra transform bookkeeping.
+  const wireframeGeometry = useMemo(() => new THREE.WireframeGeometry(geometry), [geometry]);
+  // Wire tint: a darker shade of the fill color reads as a subtle outline on any pastel.
+  const wireColor = useMemo(
+    () => new THREE.Color(object.material.color).multiplyScalar(0.55),
+    [object.material.color],
+  );
+
   return (
-    <mesh
-      ref={meshRef}
-      geometry={geometry}
-      scale={object.scale}
-      castShadow
-      receiveShadow
-      userData={{ objectId: object.id }}
-      onClick={onClick}
-    >
+    <mesh ref={meshRef} geometry={geometry} scale={object.scale} userData={{ objectId: object.id }} onClick={onClick}>
       <meshStandardMaterial
         color={object.material.color}
         metalness={object.material.metalness}
@@ -129,6 +136,9 @@ export function ClayMesh({ object, meshRef, deleteHighlight, onClick }: ClayMesh
         emissive={emissiveColor}
         emissiveIntensity={emissiveIntensity}
       />
+      <lineSegments geometry={wireframeGeometry} scale={[1.001, 1.001, 1.001]} raycast={() => null}>
+        <lineBasicMaterial color={wireColor} transparent opacity={0.35} />
+      </lineSegments>
     </mesh>
   );
 }

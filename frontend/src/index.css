@@ -1,6 +1,6 @@
 /**
- * Full-bleed dark app shell: the r3f Canvas and DOM overlays must be able to occupy the
- * entire viewport with no template-inherited centering/sizing constraints.
+ * Full-bleed light "playground" app shell: the r3f Canvas and DOM overlays must be able to
+ * occupy the entire viewport with no template-inherited centering/sizing constraints.
  */
 html,
 body,
@@ -12,8 +12,8 @@ body,
 
 body {
   overflow: hidden;
-  background: #0e0f13;
-  color: #e6e9ef;
+  background: #f4f5f7;
+  color: #1c1f26;
   font-family: system-ui, sans-serif;
 }
 
