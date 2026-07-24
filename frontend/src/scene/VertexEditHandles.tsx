@@ -17,6 +17,7 @@ import type { ThreeEvent } from "@react-three/fiber";
 import * as THREE from "three";
 import { useEditor } from "../store/editor";
 import { useHandState } from "../control/useHandState";
+import { getPrimaryHand } from "../hands/useSkeleton";
 import { pin } from "../physics/PhysicsWorld";
 import { setOrbitDisabled } from "./orbitControls";
 import type { SerializableGeometry } from "../types";
@@ -153,8 +154,8 @@ export default function VertexEditHandles() {
   // Hand-pinch drag: raycast the shared hand cursor against handle world positions each frame.
   useFrame(() => {
     if (interactionMode !== "edit" || !object || !groupRef.current || groups.length === 0) return;
-    const hand = useHandState.getState();
-    if (!hand.present) {
+    const hand = getPrimaryHand(useHandState.getState());
+    if (!hand) {
       if (draggingViaHand.current) {
         dragGroupKey.current = null;
         draggingViaHand.current = false;

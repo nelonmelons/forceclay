@@ -1,22 +1,28 @@
 /**
- * Per-frame fusion controller: reads `HandState` + `EmgMessage`, raycasts camera->cursor to
+ * Per-frame fusion controller: reads `TwoHandState` + `EmgMessage`, raycasts camera->cursor to
  * a surface hit, and dispatches behavior by `interactionMode` (the store's single source of
  * truth for what interaction currently means).
- * @remarks Branching is keyed off `useEditor`'s `interactionMode`, not an EMG classifier or a
- * hand-pose fallback:
- * - `"warp"` is the ONLY mode that reads/uses EMG `force` — it sculpts (press-in) the hovered
- *   object and pins it on first deform so it doesn't fall while being worked.
- * - `"select"`/`"physics"` grab/carry via `hand.isPinching` (no force gating) with hold-to-pin:
- *   holding the carry point within a small radius for ~1.5s auto-pins the object in place.
- * - `"delete"` hover-highlights the object under the cursor (via `useFusionStatus`) and
- *   removes it on pinch.
- * - `"move"`/`"rotate"`/`"scale"` are gizmo-owned; this hook does not grab in those modes.
- * - `"edit"` is vertex-handle-owned (`VertexEditHandles`); this hook does not grab/sculpt.
+ * @remarks Two independent gesture systems run every frame, mirroring ShapeShift exactly:
+ * - Camera navigation (always on, in every mode): one hand `isHolding` (thumb-index pinch)
+ *   orbit-rotates the camera; both hands `isHolding` pans (from the left hand's cursor delta)
+ *   and dollies (from the change in inter-hand distance). See `scene/cameraGestures.ts`.
+ * - Object interaction is keyed off `useEditor`'s `interactionMode`, using the *primary* hand
+ *   (`hands/useSkeleton.ts`'s `getPrimaryHand` — right hand, falling back to left):
+ *   - `"warp"` is the ONLY mode that reads/uses EMG `force` — it sculpts (press-in) the hovered
+ *     object and pins it on first deform so it doesn't fall while being worked.
+ *   - `"select"`/`"physics"` grab/carry via the primary hand's `isPinching` (all-5-fingertip
+ *     cluster; no force gating) with hold-to-pin: holding the carry point within a small radius
+ *     for ~1.5s auto-pins the object in place. Objects do NOT rotate with the hand (no
+ *     twist-to-rotate — ShapeShift has no such mechanic either).
+ *   - `"delete"` hover-highlights the object under the cursor (via `useFusionStatus`) and
+ *     removes it on pinch.
+ *   - `"move"`/`"rotate"`/`"scale"` are gizmo-owned; this hook does not grab in those modes.
+ *   - `"edit"` is vertex-handle-owned (`VertexEditHandles`); this hook does not grab/sculpt.
  *
  * Must be called from a component mounted *inside* the r3f `<Canvas>` (it uses `useFrame`/
  * `useThree`) and inside `VisionSocketProvider` + `EmgSocketProvider`. This is also the single
  * call site for `useSkeleton` (see `hands/useSkeleton.ts`'s module-level EMA/pinch-history
- * state) — the computed `HandState` is mirrored into `control/useHandState.ts` each frame so
+ * state) — the computed `TwoHandState` is mirrored into `control/useHandState.ts` each frame so
  * other components (e.g. `VertexEditHandles`) can read it without a second call site.
  *
  * Raycast hit -> `SceneObject` id resolution assumes `ClayObject` (Task C) stamps
@@ -28,13 +34,14 @@ import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { useVisionSocket } from "../providers/VisionSocket";
 import { useEmgSocket } from "../providers/EmgSocket";
-import { useSkeleton } from "../hands/useSkeleton";
+import { useSkeleton, getPrimaryHand, FRAME_WIDTH, FRAME_HEIGHT } from "../hands/useSkeleton";
 import { useEditor } from "../store/editor";
 import { applyBrush } from "../sculpt/brush";
 import { grab, release, pin, getBodyPosition } from "../physics/PhysicsWorld";
 import { BRUSH_RADIUS } from "../contracts";
 import { useFusionStatus } from "./fusionStatus";
 import { useHandState } from "./useHandState";
+import { orbitRotate, orbitPan, orbitDolly } from "../scene/cameraGestures";
 import type { InteractionMode } from "../types";
 
 export { useFusionStatus } from "./fusionStatus";
@@ -57,21 +64,11 @@ const CARRY_LERP = 0.2;
 const DEPTH_SENS = 4;
 /** Per-frame carry delta → release/throw velocity (units/sec). */
 const THROW_GAIN = 40;
-/** Twist-to-rotate deadzone (radians): reject hand-angle jitter so a held object doesn't spin. */
-const ROT_DEADZONE = 0.045;
 /** Sculpt writes are throttled to roughly this many Hz to keep BVH rebuilds affordable. */
 const SCULPT_HZ = 30;
 /** Warm emissive color clay ramps toward as sculpt force rises. */
 const HOT_COLOR = new THREE.Color("#ff6a1f");
 const COLD_COLOR = new THREE.Color("#000000");
-
-/** Wraps an angle delta into (-pi, pi] so a 2pi wraparound doesn't register as a huge jump. */
-function normalizeAngleDelta(delta: number): number {
-  let d = delta % (2 * Math.PI);
-  if (d > Math.PI) d -= 2 * Math.PI;
-  if (d < -Math.PI) d += 2 * Math.PI;
-  return d;
-}
 
 /** Walks up from `obj` looking for a `userData.objectId` tag (set by `ClayObject`). */
 function findObjectId(obj: THREE.Object3D | null): string | null {
@@ -102,28 +99,33 @@ export function useFusion(): FusionFrame {
   const holdStartPos = useRef<THREE.Vector3 | null>(null);
   const holdStartTime = useRef(0);
   const wasPinching = useRef(false);
-  /** Baseline hand roll angle at grab-start, for frame-to-frame delta-rotation while carrying. */
-  const lastHandAngle = useRef<number | null>(null);
   /** ShapeShift-style carry state: camera-facing drag plane, grab offset, and smoothed carry point. */
   const dragPlane = useRef(new THREE.Plane());
   const dragOffset = useRef(new THREE.Vector3());
   const initialHandDepth = useRef(0);
   const carryPos = useRef(new THREE.Vector3());
   const lastCarryPos = useRef(new THREE.Vector3());
+  /** Previous-frame cursor positions (px) for each holding hand, and previous inter-hand
+   *  distance (px), used to derive per-frame deltas for camera rotate/pan/dolly. Reset to null
+   *  whenever that hand stops holding. */
+  const prevLeftCursor = useRef<{ x: number; y: number } | null>(null);
+  const prevRightCursor = useRef<{ x: number; y: number } | null>(null);
+  const prevHandDist = useRef<number | null>(null);
 
   // `useSkeleton` is a hook and must be called at the top level on every render, not from
   // inside the `useFrame` callback. Vision arrives at camera-capture cadence (well under
-  // 60fps), so a modest re-render tick is enough to keep the derived `HandState` fresh; the
+  // 60fps), so a modest re-render tick is enough to keep the derived `TwoHandState` fresh; the
   // raycast/physics/sculpt work below still runs every animation frame via `useFrame`.
   const [, tick] = useState(0);
   useEffect(() => {
     const id = setInterval(() => tick((t) => (t + 1) % 1_000_000), 33);
     return () => clearInterval(id);
   }, []);
-  const hand = useSkeleton(vision.getData()?.hands);
+  const hands = useSkeleton(vision.getData()?.hands);
+  const hand = getPrimaryHand(hands);
   useEffect(() => {
-    useHandState.setState(hand);
-  }, [hand]);
+    useHandState.setState(hands);
+  }, [hands]);
 
   useFrame((state) => {
     const interactionMode = useEditor.getState().interactionMode;
@@ -137,7 +139,44 @@ export function useFusion(): FusionFrame {
     let hitLocal: [number, number, number] = [0, 0, 0];
     let normalLocal: [number, number, number] = [0, 0, 1];
 
-    if (hand.present) {
+    // Camera navigation runs in every mode, independent of the mode-branch below: one hand
+    // holding (thumb-index pinch, stable ~50ms) orbits the camera; both hands holding pans
+    // (from the left hand's delta) and dollies (from the change in inter-hand distance).
+    // Mirrors ShapeShift's HolohandsOverlay per-frame wiring exactly.
+    const leftHold = hands.left?.isHolding ?? false;
+    const rightHold = hands.right?.isHolding ?? false;
+    if (leftHold && rightHold && hands.left && hands.right) {
+      const L = hands.left.cursorPx;
+      const R = hands.right.cursorPx;
+      const prevL = prevLeftCursor.current;
+      const dxN = (L.x - (prevL?.x ?? L.x)) / FRAME_WIDTH;
+      const dyN = (L.y - (prevL?.y ?? L.y)) / FRAME_HEIGHT;
+      orbitPan(dxN, dyN);
+      prevLeftCursor.current = { x: L.x, y: L.y };
+
+      const currDist = Math.hypot(R.x - L.x, R.y - L.y);
+      if (prevHandDist.current != null) {
+        const deltaZoom = (prevHandDist.current - currDist) / FRAME_WIDTH;
+        orbitDolly(deltaZoom);
+      }
+      prevHandDist.current = currDist;
+      prevRightCursor.current = { x: R.x, y: R.y };
+    } else if ((leftHold && hands.left) || (rightHold && hands.right)) {
+      const H = rightHold ? hands.right! : hands.left!;
+      const prev = rightHold ? prevRightCursor.current : prevLeftCursor.current;
+      const dxN = (H.cursorPx.x - (prev?.x ?? H.cursorPx.x)) / FRAME_WIDTH;
+      const dyN = (H.cursorPx.y - (prev?.y ?? H.cursorPx.y)) / FRAME_HEIGHT;
+      orbitRotate(dxN, dyN);
+      if (rightHold) prevRightCursor.current = { x: H.cursorPx.x, y: H.cursorPx.y };
+      else prevLeftCursor.current = { x: H.cursorPx.x, y: H.cursorPx.y };
+      prevHandDist.current = null;
+    } else {
+      prevLeftCursor.current = null;
+      prevRightCursor.current = null;
+      prevHandDist.current = null;
+    }
+
+    if (hand) {
       try {
         raycaster.setFromCamera(new THREE.Vector2(hand.cursorNdc.x, hand.cursorNdc.y), camera);
         const hits = raycaster.intersectObjects(scene.children, true);
@@ -175,7 +214,6 @@ export function useFusion(): FusionFrame {
       } finally {
         heldId.current = null;
         holdStartPos.current = null;
-        lastHandAngle.current = null;
       }
     }
 
@@ -207,7 +245,7 @@ export function useFusion(): FusionFrame {
       // hand cursor doesn't jitter the object. No raw ray-hit-follow (that fed back on itself).
       try {
         if (!heldId.current) {
-          if (hasHit && hitObjectId && hand.isPinching) {
+          if (hasHit && hitObjectId && hand && hand.isPinching) {
             const bp = getBodyPosition(hitObjectId);
             const objWorld = bp ? new THREE.Vector3(bp[0], bp[1], bp[2]) : (hitWorld ?? handWorldPos).clone();
             const camForward = camera.getWorldDirection(new THREE.Vector3());
@@ -225,16 +263,14 @@ export function useFusion(): FusionFrame {
             grab(hitObjectId, [objWorld.x, objWorld.y, objWorld.z]);
             heldId.current = hitObjectId;
             holdStartPos.current = null;
-            lastHandAngle.current = hand.handAngle;
           }
         } else {
           const held = heldId.current;
-          if (!hand.isPinching) {
+          if (!hand || !hand.isPinching) {
             const velocity = carryPos.current.clone().sub(lastCarryPos.current).multiplyScalar(THROW_GAIN);
             release(held, [velocity.x, velocity.y, velocity.z]);
             heldId.current = null;
             holdStartPos.current = null;
-            lastHandAngle.current = null;
           } else {
             // Follow the drag plane, smoothed. lastCarryPos is captured before the lerp so the
             // per-frame delta doubles as throw velocity on release.
@@ -247,22 +283,6 @@ export function useFusion(): FusionFrame {
               lastCarryPos.current.copy(carryPos.current);
               carryPos.current.lerp(target, CARRY_LERP);
               grab(held, [carryPos.current.x, carryPos.current.y, carryPos.current.z]);
-            }
-
-            // Twist-to-rotate about the view axis, deadzoned to reject hand-angle jitter.
-            if (lastHandAngle.current !== null) {
-              const deltaAngle = normalizeAngleDelta(hand.handAngle - lastHandAngle.current);
-              if (Math.abs(deltaAngle) > ROT_DEADZONE) {
-                const heldObj = editor.objects.find((o) => o.id === held);
-                if (heldObj) {
-                  const camForward = camera.getWorldDirection(new THREE.Vector3());
-                  const deltaQuat = new THREE.Quaternion().setFromAxisAngle(camForward, deltaAngle);
-                  const currentQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(...heldObj.rotation));
-                  const nextEuler = new THREE.Euler().setFromQuaternion(deltaQuat.multiply(currentQuat));
-                  editor.updateTransform(held, { rotation: [nextEuler.x, nextEuler.y, nextEuler.z] });
-                }
-                lastHandAngle.current = hand.handAngle;
-              }
             }
 
             // Hold-to-pin, judged on the smoothed carry position.
@@ -281,7 +301,6 @@ export function useFusion(): FusionFrame {
                 pin(held);
                 heldId.current = null;
                 holdStartPos.current = null;
-                lastHandAngle.current = null;
                 pinProgress = 0;
                 pinningId = null;
               }
@@ -292,12 +311,12 @@ export function useFusion(): FusionFrame {
         // Physics stubs may still throw notImplemented; fusion loop stays alive regardless.
       }
     } else if (interactionMode === "delete") {
-      if (hand.isPinching && !wasPinching.current && hoveredObjectId) {
+      if (hand?.isPinching && !wasPinching.current && hoveredObjectId) {
         editor.select(hoveredObjectId);
         editor.deleteSelected();
       }
     }
-    wasPinching.current = hand.isPinching;
+    wasPinching.current = hand?.isPinching ?? false;
 
     setFrame((prev) => ({
       position: hitWorld ? [hitWorld.x, hitWorld.y, hitWorld.z] : prev.position,

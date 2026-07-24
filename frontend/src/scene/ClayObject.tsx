@@ -7,7 +7,11 @@ import type { ThreeEvent } from "@react-three/fiber";
 import { Edges } from "@react-three/drei";
 import * as THREE from "three";
 import { useEditor } from "../store/editor";
-import type { SceneObject } from "../types";
+import { useFusionStatus } from "../control/fusionStatus";
+import type { InteractionMode, SceneObject } from "../types";
+
+/** Modes where a hand pinch can pick the object up — hover shows the gold "pinch to grab" cue. */
+const GRAB_CAPABLE_MODES: InteractionMode[] = ["select", "physics", "move", "rotate", "scale"];
 
 export interface ClayObjectProps {
   object: SceneObject;
@@ -68,7 +72,9 @@ export interface ClayMeshProps {
  * sculpted custom geometry and the emissive heat-glow render identically in both paths, and
  * `useFusion`'s raycast can resolve `mesh.userData.objectId` regardless of which owns it. Draws
  * a drei `<Edges>` outline when this object is the store's `selectedId`, so selection is
- * visible regardless of `interactionMode`.
+ * visible regardless of `interactionMode`. Also draws a gold `<Edges>` "pinch to pick up" cue
+ * (ShapeShift's hover highlight) when the hand cursor ray is hovering this object in a
+ * grab-capable mode — distinct from the red delete-highlight and the blue selection outline.
  */
 export function ClayMesh({ object, meshRef, deleteHighlight, onClick }: ClayMeshProps) {
   // Custom geometry is rebuilt whenever its buffers change (sculpt edits); primitives rebuild on param change.
@@ -78,6 +84,13 @@ export function ClayMesh({ object, meshRef, deleteHighlight, onClick }: ClayMesh
     object.customGeometry,
   ]);
   const isSelected = useEditor((s) => s.selectedId === object.id);
+  const interactionMode = useEditor((s) => s.interactionMode);
+  const hoveredObjectId = useFusionStatus((s) => s.hoveredObjectId);
+  const isGoldHover =
+    !deleteHighlight &&
+    !isSelected &&
+    hoveredObjectId === object.id &&
+    GRAB_CAPABLE_MODES.includes(interactionMode);
 
   return (
     <mesh
@@ -97,6 +110,7 @@ export function ClayMesh({ object, meshRef, deleteHighlight, onClick }: ClayMesh
         emissiveIntensity={deleteHighlight ? 0.85 : object.material.emissiveIntensity}
       />
       {isSelected && <Edges color="#4dabf7" />}
+      {isGoldHover && <Edges color="#ffcc33" />}
     </mesh>
   );
 }

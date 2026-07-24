@@ -1,55 +1,48 @@
 /**
- * Derives a fused `HandState` (cursor, pinch/open pose) from raw vision landmarks (Task C).
- * @remarks Cursor = midpoint of thumb tip (4) and index tip (8), EMA-smoothed (factor 0.2).
- * Depth proxy = 1 - handDiagonal/canvasDiagonal.
+ * Derives a fused `TwoHandState` (cursor, pinch/hold pose, per Left/Right hand) from raw vision
+ * landmarks (Task C), mirroring ShapeShift's `useSkeleton.ts` gesture model.
+ * @remarks Cursor = midpoint of thumb tip (4) and index tip (8), EMA-smoothed (factor 0.2), kept
+ * per-hand so a module-level reset on one hand's disappearance doesn't disturb the other's
+ * smoothing. `isPinching` (all-5-fingertip cluster) drives object grab/drag; `isHolding`
+ * (thumb-index, stability-windowed) drives camera navigation — see `control/useFusion.ts` and
+ * `scene/cameraGestures.ts`.
  */
 import type { VisionHand } from "../contracts";
-import type { HandState } from "../types";
+import type { HandInfo, TwoHandState } from "../types";
 
-const FRAME_WIDTH = 640;
-const FRAME_HEIGHT = 360;
+/** Original vision-backend frame dimensions; landmarks are normalized to this space. */
+export const FRAME_WIDTH = 640;
+export const FRAME_HEIGHT = 360;
 const CANVAS_DIAG = Math.hypot(FRAME_WIDTH, FRAME_HEIGHT);
 const CURSOR_EMA = 0.2;
-const PINCH_STABILITY_WINDOW_MS = 120;
+/** ShapeShift holds the thumb-index distance history over this window to judge `isHolding`. */
+const HOLD_STABILITY_WINDOW_MS = 50;
 
-/** Module-scoped smoothing/history state — this is a per-frame fusion loop, not a React hook. */
-let prevCursor: { x: number; y: number } | null = null;
-let pinchDistHistory: { t: number; d: number }[] = [];
+type Side = "Left" | "Right";
+const SIDES: Side[] = ["Left", "Right"];
 
-function resetSkeletonState() {
-  prevCursor = null;
-  pinchDistHistory = [];
+/** Module-scoped smoothing/history state, per hand — this is a per-frame fusion loop, not a React hook. */
+let prevCursor: Record<Side, { x: number; y: number } | null> = { Left: null, Right: null };
+let holdDistHistory: Record<Side, { t: number; d: number }[]> = { Left: [], Right: [] };
+
+function resetSide(side: Side): void {
+  prevCursor[side] = null;
+  holdDistHistory[side] = [];
 }
 
-/**
- * Computes the current frame's `HandState` from the first detected hand, if any.
- * @remarks Cursor = EMA-smoothed (0.2) midpoint of thumb tip (landmark 4) and index tip (8).
- * `isPinching` requires the thumb-index distance to stay under 0.25*handSpread over a short
- * stability window (not just a single-frame threshold crossing).
- */
-export function useSkeleton(hands: VisionHand[] | undefined): HandState {
-  const hand = hands?.[0];
-  if (!hand) {
-    resetSkeletonState();
-    return {
-      present: false,
-      cursorPx: { x: 0, y: 0 },
-      cursorNdc: { x: 0, y: 0 },
-      depthProxy: 0,
-      isPinching: false,
-      isOpen: false,
-      handAngle: 0,
-    };
-  }
-
+/** Computes one hand's `HandInfo`, reading/writing that hand's module-level smoothing state. */
+function computeHandInfo(hand: VisionHand): HandInfo {
+  const side = hand.handedness;
   const thumb = hand.landmarks[4];
   const index = hand.landmarks[8];
   const rawX = (thumb[0] + index[0]) / 2;
   const rawY = (thumb[1] + index[1]) / 2;
-  const cursorPx = prevCursor
-    ? { x: prevCursor.x * (1 - CURSOR_EMA) + rawX * CURSOR_EMA, y: prevCursor.y * (1 - CURSOR_EMA) + rawY * CURSOR_EMA }
+
+  const prev = prevCursor[side];
+  const cursorPx = prev
+    ? { x: prev.x * (1 - CURSOR_EMA) + rawX * CURSOR_EMA, y: prev.y * (1 - CURSOR_EMA) + rawY * CURSOR_EMA }
     : { x: rawX, y: rawY };
-  prevCursor = cursorPx;
+  prevCursor[side] = cursorPx;
 
   const xs = hand.landmarks.map((l) => l[0]);
   const ys = hand.landmarks.map((l) => l[1]);
@@ -61,36 +54,30 @@ export function useSkeleton(hands: VisionHand[] | undefined): HandState {
   const depthProxy = 1 - Math.min(Math.max(handDiag / CANVAS_DIAG, 0), 1);
   const spread = (maxX - minX + (maxY - minY)) / 2;
 
-  // Pinch: thumb-index distance under threshold, held steady over a short window.
-  const pinchDist = Math.hypot(thumb[0] - index[0], thumb[1] - index[1]);
-  const now = Date.now();
-  pinchDistHistory.push({ t: now, d: pinchDist });
-  pinchDistHistory = pinchDistHistory.filter((e) => now - e.t <= PINCH_STABILITY_WINDOW_MS);
-  const avgPinchDist = pinchDistHistory.reduce((s, e) => s + e.d, 0) / pinchDistHistory.length;
-  const pinchVariance =
-    pinchDistHistory.reduce((s, e) => s + (e.d - avgPinchDist) ** 2, 0) / pinchDistHistory.length;
-  const pinchThreshold = 0.25 * spread;
-  const isPinching = pinchDist < pinchThreshold && Math.sqrt(pinchVariance) < 0.1 * spread;
-
-  // Open: fingertips spread wide from their centroid relative to hand size.
+  // Pinch: all five fingertips clustered near their centroid (ShapeShift's grab/drag gesture).
   const fingertips = [4, 8, 12, 16, 20].map((i) => hand.landmarks[i]);
   const centroid = [
     fingertips.reduce((s, p) => s + p[0], 0) / fingertips.length,
     fingertips.reduce((s, p) => s + p[1], 0) / fingertips.length,
   ];
+  const maxTipDist = Math.max(...fingertips.map((p) => Math.hypot(p[0] - centroid[0], p[1] - centroid[1])));
+  const isPinching = maxTipDist < 0.3 * spread;
   const avgTipSpread =
     fingertips.reduce((s, p) => s + Math.hypot(p[0] - centroid[0], p[1] - centroid[1]), 0) / fingertips.length;
   const isOpen = avgTipSpread > 0.45 * spread;
 
-  // Roll angle from wrist (0) -> middle-finger MCP (9): stays informative even while pinching
-  // (unlike thumb<->index, which collapses together during a pinch). Y is negated so the
-  // angle follows the conventional screen-space CCW-positive-up convention.
-  const wrist = hand.landmarks[0];
-  const middleMcp = hand.landmarks[9];
-  const handAngle = Math.atan2(-(middleMcp[1] - wrist[1]), middleMcp[0] - wrist[0]);
+  // Hold: thumb-index distance under threshold, held steady over a short window (camera nav gesture).
+  const holdDist = Math.hypot(thumb[0] - index[0], thumb[1] - index[1]);
+  const now = Date.now();
+  const history = holdDistHistory[side];
+  history.push({ t: now, d: holdDist });
+  while (history.length > 0 && now - history[0].t > HOLD_STABILITY_WINDOW_MS) history.shift();
+  const avg = history.reduce((s, e) => s + e.d, 0) / history.length;
+  const variance = history.reduce((s, e) => s + (e.d - avg) ** 2, 0) / history.length;
+  const std = Math.sqrt(variance);
+  const isHolding = avg < 0.25 * spread && std < 0.05 * spread;
 
   return {
-    present: true,
     cursorPx,
     cursorNdc: {
       x: (cursorPx.x / FRAME_WIDTH) * 2 - 1,
@@ -99,6 +86,34 @@ export function useSkeleton(hands: VisionHand[] | undefined): HandState {
     depthProxy,
     isPinching,
     isOpen,
-    handAngle,
+    isHolding,
   };
+}
+
+/**
+ * Computes the current frame's `TwoHandState` from all detected hands, keyed by
+ * MediaPipe `handedness`. A side resets its smoothing/history state the moment it's no longer
+ * detected, so a hand re-entering frame doesn't inherit stale history.
+ */
+export function useSkeleton(hands: VisionHand[] | undefined): TwoHandState {
+  const bySide: Record<Side, VisionHand | undefined> = {
+    Left: hands?.find((h) => h.handedness === "Left"),
+    Right: hands?.find((h) => h.handedness === "Right"),
+  };
+
+  for (const side of SIDES) if (!bySide[side]) resetSide(side);
+
+  return {
+    left: bySide.Left ? computeHandInfo(bySide.Left) : null,
+    right: bySide.Right ? computeHandInfo(bySide.Right) : null,
+  };
+}
+
+/**
+ * Convenience "primary hand" accessor for call sites that only care about one hand (grab/sculpt/
+ * vertex-edit raycasts). Prefers the right hand, falling back to the left — mirrors ShapeShift's
+ * `refHand = interactionRef.current.Right || interactionRef.current.Left`.
+ */
+export function getPrimaryHand(hands: TwoHandState): HandInfo | null {
+  return hands.right ?? hands.left;
 }

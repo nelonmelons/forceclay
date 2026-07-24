@@ -4,19 +4,33 @@
  * from here. Do not rename fields or types without re-syncing all consumers.
  */
 
-/** Fused per-frame hand state produced by `hands/useSkeleton.ts` from vision landmarks. */
-export interface HandState {
-  present: boolean;
+/**
+ * Fused per-frame state for a single hand, produced by `hands/useSkeleton.ts` from vision
+ * landmarks.
+ * @remarks `isPinching` (all-5-fingertip cluster) drives object grab/drag; `isHolding`
+ * (thumb-index pinch) drives camera navigation. A hand can be both at once is not expected in
+ * practice (the thresholds target different postures), but consumers should treat them as
+ * independent booleans, matching ShapeShift.
+ */
+export interface HandInfo {
   /** Cursor position in 640x360 pixel space, EMA-smoothed (factor 0.2). */
   cursorPx: { x: number; y: number };
   /** Cursor position in normalized device coords (-1..1) for raycasting. */
   cursorNdc: { x: number; y: number };
   /** 1 - handDiagonal/canvasDiagonal; larger hand on screen = closer to camera. */
   depthProxy: number;
+  /** All five fingertips clustered near their centroid (< 0.3*handSpread) — grab/drag gesture. */
   isPinching: boolean;
+  /** Fingertips spread wide from their centroid (> 0.45*handSpread) — open-hand pose. */
   isOpen: boolean;
-  /** Hand roll angle (radians) from wrist->middle-MCP, for twist-to-rotate while carrying. */
-  handAngle: number;
+  /** Thumb-index tip distance < 0.25*handSpread, stable ~50ms — camera-navigation gesture. */
+  isHolding: boolean;
+}
+
+/** Per-frame state for both hands, keyed by MediaPipe `handedness`. Either side may be absent. */
+export interface TwoHandState {
+  left: HandInfo | null;
+  right: HandInfo | null;
 }
 
 /** Supported primitive/geometry kinds a `SceneObject` may hold. */

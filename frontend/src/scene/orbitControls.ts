@@ -23,6 +23,11 @@ export function registerOrbitControls(instance: OrbitControlsImpl | null): void 
   applyEnabled();
 }
 
+/** Returns the shared `OrbitControls` instance, or null before `Viewport` has mounted it. */
+export function getOrbitControls(): OrbitControlsImpl | null {
+  return controls;
+}
+
 /**
  * Adds or removes a named reason to keep orbit disabled (e.g. "gizmo", "vertex", "hand").
  * Orbit is re-enabled once no reasons remain active.
