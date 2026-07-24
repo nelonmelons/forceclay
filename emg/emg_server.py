@@ -55,6 +55,30 @@ TICK_DT = 1.0 / TICK_HZ
 CALIBRATION_WINDOW_S = 1.2
 MOCK_NUM_CHANNELS = 8
 
+# Response shaping, applied to `force` AFTER calibration maps it to 0..1.
+#
+# The board axis is a weighted sum of LOG envelopes, because that is the space the
+# LDA weights were fitted in. A log compresses the top of the range and expands the
+# bottom, so light contractions read far hotter than their amplitude warrants: at
+# rest 4.6 uV and clench 56.6 uV, a light 12 uV squeeze lands at 38% on the log axis
+# but only 14% of the linear amplitude span. Squaring the normalized value undoes
+# almost exactly that much, so GAMMA=2.0 restores a roughly linear-in-amplitude feel
+# while leaving both endpoints (0 and 1) fixed. Raise it for a stiffer grip.
+#
+# DEADZONE then lifts the floor so resting jitter and an open/pointing hand -- the
+# extensors fire on extension too -- do not register as a light grip.
+DEFAULT_GAMMA = 2.0
+DEFAULT_DEADZONE = 0.08
+
+
+def shape_force(x: float, gamma: float = DEFAULT_GAMMA,
+                deadzone: float = DEFAULT_DEADZONE) -> float:
+    """Map a calibrated 0..1 force through deadzone + gamma, endpoints preserved."""
+    if deadzone > 0.0:
+        x = (x - deadzone) / (1.0 - deadzone)
+    x = max(0.0, min(1.0, x))
+    return x ** gamma if gamma != 1.0 else x
+
 
 class MockEmgSource:
     """Synthetic EMG envelope generator: slow sine + noise + occasional clench-like spikes.
@@ -220,9 +244,13 @@ class RealEmgSource:
 class EmgBackend:
     """Owns the signal source, calibration state machine, and connected clients."""
 
-    def __init__(self, source, num_channels: int) -> None:
+    def __init__(self, source, num_channels: int,
+                 gamma: float = DEFAULT_GAMMA,
+                 deadzone: float = DEFAULT_DEADZONE) -> None:
         self.source = source
         self.num_channels = num_channels
+        self.gamma = gamma
+        self.deadzone = deadzone
         self.calib = MultiChannelCalibration(num_channels)
         self.mock = isinstance(source, MockEmgSource)
         self.state = "idle"  # idle | collecting_rest | collecting_max
@@ -265,7 +293,8 @@ class EmgBackend:
                 self.state = "idle"
 
         return {
-            "force": self.calib.normalize_force(agg),
+            "force": shape_force(self.calib.normalize_force(agg),
+                                 self.gamma, self.deadzone),
             "perChannel": self.calib.normalize_channels(chans),
             "calibrated": self.calib.calibrated,
         }
@@ -319,6 +348,10 @@ def main() -> None:
                              "which puts the ADS1299 -3 dB point at 33 Hz, below sEMG median frequency")
     parser.add_argument("--channels", default=None,
                         help="comma list of 1-based channels to combine (default: the weighted set 1,2,4)")
+    parser.add_argument("--gamma", type=float, default=DEFAULT_GAMMA,
+                        help="force response exponent; >1 is less sensitive (default 2.0)")
+    parser.add_argument("--deadzone", type=float, default=DEFAULT_DEADZONE,
+                        help="fraction of the low range suppressed before gamma (default 0.08)")
     parser.add_argument("--weights", default=None,
                         help="comma list of per-channel weights matching --channels; "
                              "omit to use the fitted LDA weights")
@@ -326,7 +359,7 @@ def main() -> None:
 
     if args.mock:
         source = MockEmgSource(MOCK_NUM_CHANNELS)
-        backend = EmgBackend(source, MOCK_NUM_CHANNELS)
+        backend = EmgBackend(source, MOCK_NUM_CHANNELS, args.gamma, args.deadzone)
     else:
         if not args.serial_port:
             parser.error("--serial-port is required unless --mock is given")
@@ -340,7 +373,7 @@ def main() -> None:
             wts = dict(zip(chans, vals))
         source = RealEmgSource(args.serial_port, board=args.board,
                               channels=chans, weights=wts)
-        backend = EmgBackend(source, source.num_channels)
+        backend = EmgBackend(source, source.num_channels, args.gamma, args.deadzone)
 
     try:
         asyncio.run(_run(backend))
