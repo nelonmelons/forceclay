@@ -75,11 +75,58 @@ export function orbitPan(dxN: number, dyN: number): void {
   ctrl.update();
 }
 
-/** Two-hand pinch-distance dolly: zooms via the controls' native `dollyIn`, positive = zoom in. */
+/**
+ * Soft deadzone: eases motion in from zero instead of gating it.
+ *
+ * A hard `if (|d| > dz)` gate makes motion POP — the moment the hand crosses the threshold the
+ * full magnitude applies, so slow deliberate zooms feel like they snap. Subtracting the deadzone
+ * and rescaling keeps the response continuous: still immune to jitter, but a small motion now
+ * produces a small movement.
+ */
+export function softDeadzone(value: number, deadzone: number): number {
+  const a = Math.abs(value);
+  if (a <= deadzone) return 0;
+  return Math.sign(value) * (a - deadzone) / (1 - deadzone);
+}
+
+/** Smoothed dolly state. Module-scoped because there is exactly one camera. */
+let dollyVel = 0;
+/** EMA factor for the zoom rate — lower is smoother and laggier. */
+const DOLLY_SMOOTH = 0.35;
+/** Max per-frame pinch delta accepted. Bigger jumps are tracking glitches, not intent. */
+const DOLLY_CLAMP = 0.08;
+/** Camera distance limits, so a zoom cannot end up inside the object or out in the void. */
+const MIN_DIST = 1.2;
+const MAX_DIST = 22;
+
+/**
+ * Two-hand pinch-distance dolly, smoothed and bounded.
+ *
+ * Three guards the raw version lacked: the incoming delta is clamped so a landmark jump (hands
+ * re-detected, one hand briefly lost) cannot fling the camera; the rate is EMA-smoothed so the
+ * zoom glides instead of stuttering with per-frame hand noise; and the resulting distance is
+ * held between MIN_DIST and MAX_DIST so you cannot zoom through the scene or lose it entirely.
+ */
 export function orbitDolly(delta: number): void {
   const ctrl = getOrbitControls();
   if (!ctrl) return;
-  const zoomFactor = Math.exp(delta * 0.5);
-  ctrl.dollyIn(zoomFactor);
+  const clamped = Math.max(-DOLLY_CLAMP, Math.min(DOLLY_CLAMP, delta));
+  dollyVel = dollyVel * (1 - DOLLY_SMOOTH) + clamped * DOLLY_SMOOTH;
+  if (Math.abs(dollyVel) < 1e-5) return;
+
+  const cam = ctrl.object as THREE.Camera & { position: THREE.Vector3 };
+  const target = ctrl.target as THREE.Vector3;
+  const dist = cam.position.distanceTo(target);
+  const next = dist / Math.exp(dollyVel * 1.6);
+  if ((next < MIN_DIST && dollyVel > 0) || (next > MAX_DIST && dollyVel < 0)) {
+    dollyVel = 0;
+    return;
+  }
+  ctrl.dollyIn(Math.exp(dollyVel * 1.6));
   ctrl.update();
+}
+
+/** Clears smoothing state so a new gesture does not inherit the last one's momentum. */
+export function resetDolly(): void {
+  dollyVel = 0;
 }

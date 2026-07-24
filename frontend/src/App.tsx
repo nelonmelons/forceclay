@@ -9,6 +9,8 @@ import { EmgSocketProvider } from "./providers/EmgSocket";
 import ForceHUD from "./ui/ForceHUD";
 import Toolbar from "./ui/Toolbar";
 import CalibrationPanel from "./ui/CalibrationPanel";
+import FragileWatcher from "./fragile/FragileWatcher";
+import FragileSpawnButtons from "./fragile/FragileSpawnButtons";
 import ConnectionStatus from "./ui/ConnectionStatus";
 import CameraPip from "./ui/CameraPip";
 import HandOverlay from "./ui/HandOverlay";
@@ -38,6 +40,8 @@ function App() {
           <ForceHUD />
           <Toolbar />
           <CalibrationPanel />
+          <FragileWatcher />
+          <FragileSpawnButtons />
           <ConnectionStatus />
           <button
             onClick={() => window.dispatchEvent(new Event(SPAWN_EVENT))}
