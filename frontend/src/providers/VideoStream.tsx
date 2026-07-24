@@ -10,6 +10,8 @@ export interface VideoStreamApi {
   captureFrame(): Promise<ArrayBuffer | null>;
   /** "pending" while awaiting `getUserMedia`, "ready" once a stream is attached, "error" if denied/unavailable. */
   getStatus(): "pending" | "ready" | "error";
+  /** The live camera `MediaStream`, or null before it resolves / on error. Lets other elements (e.g. a visible PIP) bind the same stream. */
+  getStream(): MediaStream | null;
 }
 
 const VideoStreamContext = createContext<VideoStreamApi | null>(null);
@@ -22,6 +24,7 @@ export function VideoStreamProvider({ children }: { children: ReactNode }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const statusRef = useRef<"pending" | "ready" | "error">("pending");
+  const streamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => {
     let stream: MediaStream | null = null;
@@ -39,6 +42,7 @@ export function VideoStreamProvider({ children }: { children: ReactNode }) {
           return;
         }
         stream = s;
+        streamRef.current = s;
         statusRef.current = "ready";
         if (videoRef.current) {
           videoRef.current.srcObject = s;
@@ -81,7 +85,12 @@ export function VideoStreamProvider({ children }: { children: ReactNode }) {
     });
   };
 
-  const api: VideoStreamApi = { videoRef, captureFrame, getStatus: () => statusRef.current };
+  const api: VideoStreamApi = {
+    videoRef,
+    captureFrame,
+    getStatus: () => statusRef.current,
+    getStream: () => streamRef.current,
+  };
   return (
     <VideoStreamContext.Provider value={api}>
       <video ref={videoRef} style={{ display: "none" }} muted playsInline />

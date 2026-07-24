@@ -17,6 +17,8 @@ export interface VisionSocketApi {
   /** True once the last sent frame's response has arrived (backpressure gate). */
   getAcknowledged(): boolean;
   getConnectionStatus(): "connecting" | "connected" | "disconnected";
+  /** Diagnostic counters: frames sent to and messages received from the vision backend. */
+  getStats(): { sent: number; received: number };
 }
 
 const VisionSocketContext = createContext<VisionSocketApi | null>(null);
@@ -39,12 +41,16 @@ export function VisionSocketProvider({ children }: { children: ReactNode }) {
   const statusRef = useRef<"connecting" | "connected" | "disconnected">("disconnected");
   const lastMessageAtRef = useRef(Date.now());
   const reconnectTimerRef = useRef<number | null>(null);
+  /** Diagnostic-only counters (Task: pipeline troubleshooting); do not affect capture/send logic. */
+  const sentCountRef = useRef(0);
+  const receivedCountRef = useRef(0);
 
   const sendFrame = (jpeg: ArrayBuffer) => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     ws.send(jpeg);
     acknowledgedRef.current = false;
+    sentCountRef.current += 1;
   };
 
   useEffect(() => {
@@ -80,6 +86,7 @@ export function VisionSocketProvider({ children }: { children: ReactNode }) {
           dataRef.current = msg;
           acknowledgedRef.current = true;
           lastMessageAtRef.current = Date.now();
+          receivedCountRef.current += 1;
         } catch {
           // ignore malformed frames
         }
@@ -125,6 +132,7 @@ export function VisionSocketProvider({ children }: { children: ReactNode }) {
       getData: () => dataRef.current,
       getAcknowledged: () => acknowledgedRef.current,
       getConnectionStatus: () => statusRef.current,
+      getStats: () => ({ sent: sentCountRef.current, received: receivedCountRef.current }),
     }),
     [],
   );

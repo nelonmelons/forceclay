@@ -49,20 +49,26 @@ export default function ConnectionStatus() {
   const cameraStatus = video.getStatus();
   const visionStatus = vision.getConnectionStatus();
   const emgStatus = emg.getConnectionStatus();
+  const { sent, received } = vision.getStats();
+  const handCount = vision.getData()?.hands?.length ?? 0;
+  const insecureOrigin = !window.isSecureContext;
 
   return (
     <div
       style={{
         position: "fixed",
-        bottom: 16,
-        left: 16,
+        // Stacked directly above CameraPip (left:12, bottom:12, ~154px tall) with a small gap,
+        // sharing its left edge and width so the two form one clean bottom-left column.
+        bottom: 180,
+        left: 12,
+        width: 210,
         zIndex: 20,
-        padding: "10px 14px",
+        padding: "10px 12px",
         borderRadius: 12,
         background: "rgba(15, 15, 20, 0.72)",
         color: "#fff",
         fontFamily: "system-ui, sans-serif",
-        minWidth: 180,
+        boxSizing: "border-box",
         pointerEvents: "none",
         backdropFilter: "blur(6px)",
         display: "flex",
@@ -73,6 +79,16 @@ export default function ConnectionStatus() {
       <Row label="camera" state={cameraStatus === "ready" ? "ok" : cameraStatus === "pending" ? "pending" : "error"} text={cameraStatus} />
       <Row label="vision :6969" state={visionStatus === "connected" ? "ok" : visionStatus === "connecting" ? "pending" : "error"} text={visionStatus} />
       <Row label="emg :6970" state={emgStatus === "connected" ? "ok" : emgStatus === "connecting" ? "pending" : "error"} text={emgStatus} />
+      <div style={{ fontSize: 11, opacity: 0.7, marginTop: 2 }}>
+        frames: {sent}&rarr;{received}
+      </div>
+      <div style={{ fontSize: 11, opacity: 0.7 }}>hands: {handCount}</div>
+      {cameraStatus === "error" && (
+        <div style={{ fontSize: 11, color: "#f87171" }}>camera error — check OS/browser permission</div>
+      )}
+      {insecureOrigin && (
+        <div style={{ fontSize: 11, color: "#f87171" }}>insecure origin — camera blocked; use localhost</div>
+      )}
     </div>
   );
 }

@@ -21,7 +21,7 @@ export interface ViewportProps {
  */
 export default function Viewport({ children }: ViewportProps) {
   return (
-    <Canvas shadows>
+    <Canvas shadows style={{ position: "fixed", inset: 0, width: "100vw", height: "100vh", display: "block" }}>
       <PerspectiveCamera makeDefault position={[0, 3, 5]} fov={50} onUpdate={(c) => c.lookAt(0, 0, 0)} />
       <ambientLight intensity={0.6} />
       <directionalLight position={[5, 8, 5]} intensity={1} castShadow />

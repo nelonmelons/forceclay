@@ -7,6 +7,8 @@ import { EmgSocketProvider } from "./providers/EmgSocket";
 import ForceHUD from "./ui/ForceHUD";
 import CalibrationPanel from "./ui/CalibrationPanel";
 import ConnectionStatus from "./ui/ConnectionStatus";
+import CameraPip from "./ui/CameraPip";
+import HandOverlay from "./ui/HandOverlay";
 
 /**
  * App root: nests the camera/vision/EMG providers, mounts the single r3f `Viewport` (which
@@ -26,6 +28,8 @@ function App() {
             <FusionLayer />
             <SpawnHandler />
           </Viewport>
+          <HandOverlay />
+          <CameraPip />
           <ForceHUD />
           <CalibrationPanel />
           <ConnectionStatus />
