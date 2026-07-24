@@ -60,8 +60,10 @@ export default function CalibrationPanel() {
     <div
       style={{
         position: "fixed",
-        top: 16,
-        right: 16,
+        // Docked bottom-center so it clears the top-right toolbar / add-shape buttons.
+        bottom: 16,
+        left: "50%",
+        transform: "translateX(-50%)",
         zIndex: 20,
         padding: "12px 16px",
         borderRadius: 12,

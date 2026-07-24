@@ -65,13 +65,12 @@ export default function Toolbar() {
   return (
     <div
       style={{
-        // `CalibrationPanel` also docks at top:16/right:16 (zIndex 20) and paints after this
-        // component in `App.tsx`'s JSX order, so it wins the same-z-index stack; drop below
-        // its ~150px height instead of fighting it for the same corner.
+        // Top-right; CalibrationPanel moved to bottom-center so this corner is now clear.
         position: "fixed",
-        top: 180,
+        top: 16,
         right: 16,
         zIndex: 20,
+        maxWidth: 320,
         display: "flex",
         flexWrap: "wrap",
         gap: 6,
