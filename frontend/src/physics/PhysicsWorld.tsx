@@ -241,7 +241,18 @@ export function pin(id: string): void {
   const body = bodies.get(id);
   if (body) body.setBodyType(RigidBodyType.Fixed, true);
   try {
-    useEditor.getState().setPhysics(id, "fixed");
+    const store = useEditor.getState();
+    // Sync the store transform to the body's CURRENT carried pose FIRST. Flipping physics to
+    // "fixed" remounts the RigidBody (key = `${id}-${physics}`), and the remounted body is
+    // created at `object.position` — which is never updated during a kinematic carry. Without
+    // this, pinning snaps the object back to its stale spawn position instead of where it was held.
+    if (body) {
+      const t = body.translation();
+      const q = body.rotation();
+      const e = new THREE.Euler().setFromQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w));
+      store.updateTransform(id, { position: [t.x, t.y, t.z], rotation: [e.x, e.y, e.z] });
+    }
+    store.setPhysics(id, "fixed");
   } catch {
     // Store action not wired for this id yet (e.g. debug-only body) — ignore.
   }
