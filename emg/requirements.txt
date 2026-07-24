@@ -1,3 +1,4 @@
 brainflow
 numpy
 scikit-learn
+websockets
