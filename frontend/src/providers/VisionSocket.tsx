@@ -4,8 +4,10 @@
  * @remarks Mirrors ShapeShift's `WebSocketContext` — request/response backpressure (only
  * send the next frame once the last result arrived), auto-reconnect every 3s.
  */
-import { createContext, useContext, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { VISION_WS } from "../contracts";
 import type { VisionMessage } from "../contracts";
+import { useVideoStream } from "./VideoStream";
 
 export interface VisionSocketApi {
   /** Sends one mirrored JPEG frame (ArrayBuffer) if the previous frame has been acknowledged. */
@@ -19,16 +21,113 @@ export interface VisionSocketApi {
 
 const VisionSocketContext = createContext<VisionSocketApi | null>(null);
 
-/** Provides `VisionSocketApi` to descendants; owns the `:6969/ws` WebSocket lifecycle. */
+const RECONNECT_MS = 3000;
+/** If no message arrives for this long, assume the server dropped a frame silently and unblock sending. */
+const WATCHDOG_MS = 2000;
+
+/**
+ * Provides `VisionSocketApi` to descendants; owns the `:6969/ws` WebSocket lifecycle and
+ * drives a request/response capture loop via `requestAnimationFrame`.
+ * @remarks Backpressure: the loop only calls `captureFrame`+send once `acknowledged` is true
+ * (set on `onmessage`, cleared on send). A watchdog force-clears it if the server stalls.
+ */
 export function VisionSocketProvider({ children }: { children: ReactNode }) {
-  const api: VisionSocketApi = {
-    sendFrame: () => {
-      throw new Error("notImplemented: VisionSocketProvider.sendFrame");
-    },
-    getData: () => null,
-    getAcknowledged: () => false,
-    getConnectionStatus: () => "disconnected",
+  const { captureFrame } = useVideoStream();
+  const wsRef = useRef<WebSocket | null>(null);
+  const dataRef = useRef<VisionMessage | null>(null);
+  const acknowledgedRef = useRef(true);
+  const statusRef = useRef<"connecting" | "connected" | "disconnected">("disconnected");
+  const lastMessageAtRef = useRef(Date.now());
+  const reconnectTimerRef = useRef<number | null>(null);
+
+  const sendFrame = (jpeg: ArrayBuffer) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(jpeg);
+    acknowledgedRef.current = false;
   };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const connect = () => {
+      if (cancelled) return;
+      const ws = new WebSocket(VISION_WS);
+      wsRef.current = ws;
+      statusRef.current = "connecting";
+
+      ws.onopen = () => {
+        statusRef.current = "connected";
+      };
+      ws.onclose = () => {
+        statusRef.current = "disconnected";
+        wsRef.current = null;
+        if (!cancelled && reconnectTimerRef.current === null) {
+          reconnectTimerRef.current = window.setTimeout(() => {
+            reconnectTimerRef.current = null;
+            connect();
+          }, RECONNECT_MS);
+        }
+      };
+      ws.onerror = () => ws.close();
+      ws.onmessage = async (event) => {
+        let text = "";
+        if (typeof event.data === "string") text = event.data;
+        else if (event.data instanceof Blob) text = await event.data.text();
+        else return;
+        try {
+          const msg = JSON.parse(text) as VisionMessage;
+          dataRef.current = msg;
+          acknowledgedRef.current = true;
+          lastMessageAtRef.current = Date.now();
+        } catch {
+          // ignore malformed frames
+        }
+      };
+    };
+
+    connect();
+    const watchdog = window.setInterval(() => {
+      if (Date.now() - lastMessageAtRef.current > WATCHDOG_MS) acknowledgedRef.current = true;
+    }, 500);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(watchdog);
+      if (reconnectTimerRef.current !== null) window.clearTimeout(reconnectTimerRef.current);
+      wsRef.current?.close();
+      wsRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    let raf = 0;
+    let stopped = false;
+    const loop = async () => {
+      if (stopped) return;
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN && acknowledgedRef.current) {
+        const frame = await captureFrame();
+        if (frame) sendFrame(frame);
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => {
+      stopped = true;
+      cancelAnimationFrame(raf);
+    };
+  }, [captureFrame]);
+
+  const api = useMemo<VisionSocketApi>(
+    () => ({
+      sendFrame,
+      getData: () => dataRef.current,
+      getAcknowledged: () => acknowledgedRef.current,
+      getConnectionStatus: () => statusRef.current,
+    }),
+    [],
+  );
   return <VisionSocketContext.Provider value={api}>{children}</VisionSocketContext.Provider>;
 }
 
