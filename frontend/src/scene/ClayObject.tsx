@@ -4,7 +4,6 @@
  */
 import { useMemo, type Ref } from "react";
 import type { ThreeEvent } from "@react-three/fiber";
-import { Edges } from "@react-three/drei";
 import * as THREE from "three";
 import { useEditor } from "../store/editor";
 import { useFusionStatus } from "../control/fusionStatus";
@@ -91,13 +90,27 @@ export function ClayMesh({ object, meshRef, deleteHighlight, onClick }: ClayMesh
   const isGoldHover =
     !deleteHighlight &&
     !isGrabbed &&
-    !isSelected &&
     hoveredObjectId === object.id &&
     GRAB_CAPABLE_MODES.includes(interactionMode);
 
-  // Priority: delete (red) > grabbed (cyan, lit while carried) > object's own emissive.
-  const emissiveColor = deleteHighlight ? "#ff1a1a" : isGrabbed ? "#22e0ff" : object.material.emissive;
-  const emissiveIntensity = deleteHighlight ? 0.85 : isGrabbed ? 0.9 : object.material.emissiveIntensity;
+  // ShapeShift-style: highlight by making the whole object GLOW (emissive), not a thin edge
+  // outline (drei <Edges> wasn't rendering). Priority: delete(red) > grabbed(cyan) >
+  // hover(gold) > selected(blue) > the object's own emissive.
+  let emissiveColor = object.material.emissive;
+  let emissiveIntensity = object.material.emissiveIntensity;
+  if (deleteHighlight) {
+    emissiveColor = "#ff1a1a";
+    emissiveIntensity = 0.85;
+  } else if (isGrabbed) {
+    emissiveColor = "#22e0ff";
+    emissiveIntensity = 0.9;
+  } else if (isGoldHover) {
+    emissiveColor = "#ffcc33";
+    emissiveIntensity = 0.8;
+  } else if (isSelected) {
+    emissiveColor = "#4dabf7";
+    emissiveIntensity = 0.55;
+  }
 
   return (
     <mesh
@@ -116,9 +129,6 @@ export function ClayMesh({ object, meshRef, deleteHighlight, onClick }: ClayMesh
         emissive={emissiveColor}
         emissiveIntensity={emissiveIntensity}
       />
-      {isSelected && !isGrabbed && <Edges color="#4dabf7" />}
-      {isGoldHover && <Edges color="#ffcc33" />}
-      {isGrabbed && <Edges color="#22e0ff" />}
     </mesh>
   );
 }
