@@ -91,12 +91,10 @@ export function VideoStreamProvider({ children }: { children: ReactNode }) {
     getStatus: () => statusRef.current,
     getStream: () => streamRef.current,
   };
-  return (
-    <VideoStreamContext.Provider value={api}>
-      <video ref={videoRef} style={{ display: "none" }} muted playsInline />
-      {children}
-    </VideoStreamContext.Provider>
-  );
+  // No hidden capture <video> here: Chrome suspends frame decoding on a display:none
+  // video, so captureFrame would never reach HAVE_CURRENT_DATA. The visible CameraPip
+  // renders this same `videoRef`, so we capture from an on-screen, actively-decoding element.
+  return <VideoStreamContext.Provider value={api}>{children}</VideoStreamContext.Provider>;
 }
 
 /** Reads the `VideoStreamApi` from context; throws if used outside `VideoStreamProvider`. */

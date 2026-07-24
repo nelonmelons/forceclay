@@ -5,13 +5,16 @@
  * `getStream()` MediaStream — re-attaching whenever the stream reference changes, since the
  * hidden capture `<video>` in `VideoStreamProvider` owns the original element.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useVideoStream } from "../providers/VideoStream";
 
-/** Bottom-left camera PIP card showing the live mirrored feed and connection status. */
+/**
+ * Bottom-left camera PIP card showing the live mirrored feed and status.
+ * @remarks This video IS the capture source: it uses the provider's shared `videoRef`, so the
+ * on-screen element is what `captureFrame` draws from (a hidden video would stop decoding).
+ */
 export default function CameraPip() {
-  const { getStatus, getStream } = useVideoStream();
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const { getStatus, getStream, videoRef } = useVideoStream();
   const [status, setStatus] = useState<"pending" | "ready" | "error">("pending");
 
   useEffect(() => {
@@ -26,7 +29,7 @@ export default function CameraPip() {
       }
     }, 250);
     return () => window.clearInterval(interval);
-  }, [getStatus, getStream]);
+  }, [getStatus, getStream, videoRef]);
 
   return (
     <div
