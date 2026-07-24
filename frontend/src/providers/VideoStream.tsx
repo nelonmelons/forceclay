@@ -12,6 +12,8 @@ export interface VideoStreamApi {
   getStatus(): "pending" | "ready" | "error";
   /** The live camera `MediaStream`, or null before it resolves / on error. Lets other elements (e.g. a visible PIP) bind the same stream. */
   getStream(): MediaStream | null;
+  /** Diagnostic: the capture video's `readyState` (-1 if unmounted) and whether a stream is attached. */
+  getVideoState(): { readyState: number; hasSrc: boolean };
 }
 
 const VideoStreamContext = createContext<VideoStreamApi | null>(null);
@@ -90,6 +92,10 @@ export function VideoStreamProvider({ children }: { children: ReactNode }) {
     captureFrame,
     getStatus: () => statusRef.current,
     getStream: () => streamRef.current,
+    getVideoState: () => ({
+      readyState: videoRef.current?.readyState ?? -1,
+      hasSrc: !!videoRef.current?.srcObject,
+    }),
   };
   // No hidden capture <video> here: Chrome suspends frame decoding on a display:none
   // video, so captureFrame would never reach HAVE_CURRENT_DATA. The visible CameraPip

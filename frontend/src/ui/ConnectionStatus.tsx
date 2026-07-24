@@ -52,6 +52,7 @@ export default function ConnectionStatus() {
   const { sent, received } = vision.getStats();
   const handCount = vision.getData()?.hands?.length ?? 0;
   const insecureOrigin = !window.isSecureContext;
+  const { readyState, hasSrc } = video.getVideoState();
 
   return (
     <div
@@ -83,6 +84,7 @@ export default function ConnectionStatus() {
         frames: {sent}&rarr;{received}
       </div>
       <div style={{ fontSize: 11, opacity: 0.7 }}>hands: {handCount}</div>
+      <div style={{ fontSize: 11, opacity: 0.7 }}>video: rs {readyState} src {hasSrc ? 1 : 0}</div>
       {cameraStatus === "error" && (
         <div style={{ fontSize: 11, color: "#f87171" }}>camera error — check OS/browser permission</div>
       )}
