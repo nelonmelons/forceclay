@@ -7,13 +7,16 @@
  * `updateTransform`, which `PhysicsWorld`'s `<RigidBody position/rotation>` props pick up
  * automatically (`@react-three/rapier` re-applies transform props to the underlying Rapier
  * body even when it's `Fixed`), so no direct Rapier calls are needed here. Pins the object on
- * first interaction so physics doesn't fight the manual edit.
+ * first interaction so physics doesn't fight the manual edit. Disables mouse `OrbitControls`
+ * for the duration of a drag (via `orbitControls.ts`'s "gizmo" reason) so orbiting the camera
+ * doesn't fight dragging the gizmo handles.
  */
 import { useEffect, useRef, useState } from "react";
 import { TransformControls } from "@react-three/drei";
 import * as THREE from "three";
 import { useEditor } from "../store/editor";
 import { pin } from "../physics/PhysicsWorld";
+import { setOrbitDisabled } from "./orbitControls";
 import type { InteractionMode } from "../types";
 
 const MODE_MAP: Partial<Record<InteractionMode, "translate" | "rotate" | "scale">> = {
@@ -39,6 +42,9 @@ export default function TransformGizmo() {
   useEffect(() => {
     pinnedThisSession.current = false;
   }, [selectedId, interactionMode]);
+
+  // Clear the disable reason on unmount so a mode switch mid-drag can't leave orbit stuck off.
+  useEffect(() => () => setOrbitDisabled("gizmo", false), []);
 
   if (!object || !gizmoMode) return null;
 
@@ -70,7 +76,15 @@ export default function TransformGizmo() {
         rotation={object.rotation}
         scale={object.scale}
       />
-      {proxyObject && <TransformControls object={proxyObject} mode={gizmoMode} onObjectChange={handleChange} />}
+      {proxyObject && (
+        <TransformControls
+          object={proxyObject}
+          mode={gizmoMode}
+          onObjectChange={handleChange}
+          onMouseDown={() => setOrbitDisabled("gizmo", true)}
+          onMouseUp={() => setOrbitDisabled("gizmo", false)}
+        />
+      )}
     </>
   );
 }

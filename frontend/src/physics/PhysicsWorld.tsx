@@ -8,7 +8,7 @@
  * *current* rendered geometry, never a re-triangulated concave sculpt mesh, to keep the
  * broad/narrow phase cheap while sculpting.
  */
-import { Physics, RigidBody, type RapierRigidBody } from "@react-three/rapier";
+import { Physics, RigidBody, CuboidCollider, type RapierRigidBody } from "@react-three/rapier";
 import { RigidBodyType } from "@dimforge/rapier3d-compat";
 import { useFrame } from "@react-three/fiber";
 import { useEffect, useRef } from "react";
@@ -167,10 +167,20 @@ function applyScale(id: string, f: number): void {
   mesh.scale.set(base[0] * sxz, base[1] * sy, base[2] * sxz);
 }
 
-/** Root Rapier physics provider for the scene: gravity, all store scene bodies, and the grab/squash frame loop. */
+/**
+ * Root Rapier physics provider for the scene: gravity, a static ground plane (so dropped/
+ * dynamic objects land instead of falling forever), all store scene bodies, and the
+ * grab/squash frame loop.
+ * @remarks The ground is a thin fixed cuboid collider whose top surface sits at y=0 to line up
+ * with the visual `Grid` in `Viewport`. `colliders={false}` on the body means only the explicit
+ * `CuboidCollider` is used (no auto-collider from children, since it has none).
+ */
 export default function PhysicsWorld({ children }: PhysicsWorldProps) {
   return (
     <Physics gravity={[0, -9.81, 0]}>
+      <RigidBody type="fixed" colliders={false} position={[0, -0.05, 0]}>
+        <CuboidCollider args={[50, 0.05, 50]} restitution={0.5} friction={0.9} />
+      </RigidBody>
       <SceneBodies />
       <PhysicsRuntime />
       {children}

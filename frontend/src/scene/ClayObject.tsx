@@ -4,7 +4,9 @@
  */
 import { useMemo, type Ref } from "react";
 import type { ThreeEvent } from "@react-three/fiber";
+import { Edges } from "@react-three/drei";
 import * as THREE from "three";
+import { useEditor } from "../store/editor";
 import type { SceneObject } from "../types";
 
 export interface ClayObjectProps {
@@ -64,7 +66,9 @@ export interface ClayMeshProps {
  * transform of its own — callers place it via a wrapping `<group>`/`<RigidBody>`.
  * @remarks Reused by both `ClayObject` (standalone) and `PhysicsWorld`'s `SceneBody` so
  * sculpted custom geometry and the emissive heat-glow render identically in both paths, and
- * `useFusion`'s raycast can resolve `mesh.userData.objectId` regardless of which owns it.
+ * `useFusion`'s raycast can resolve `mesh.userData.objectId` regardless of which owns it. Draws
+ * a drei `<Edges>` outline when this object is the store's `selectedId`, so selection is
+ * visible regardless of `interactionMode`.
  */
 export function ClayMesh({ object, meshRef, deleteHighlight, onClick }: ClayMeshProps) {
   // Custom geometry is rebuilt whenever its buffers change (sculpt edits); primitives rebuild on param change.
@@ -73,6 +77,7 @@ export function ClayMesh({ object, meshRef, deleteHighlight, onClick }: ClayMesh
     object.geometryParams,
     object.customGeometry,
   ]);
+  const isSelected = useEditor((s) => s.selectedId === object.id);
 
   return (
     <mesh
@@ -91,6 +96,7 @@ export function ClayMesh({ object, meshRef, deleteHighlight, onClick }: ClayMesh
         emissive={deleteHighlight ? "#ff1a1a" : object.material.emissive}
         emissiveIntensity={deleteHighlight ? 0.85 : object.material.emissiveIntensity}
       />
+      {isSelected && <Edges color="#4dabf7" />}
     </mesh>
   );
 }

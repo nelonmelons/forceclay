@@ -7,7 +7,9 @@
  * window-level pointermove/up so the drag survives leaving the small handle mesh) and
  * hand-pinch drag (via the shared `useHandState` store — see that module's header for why
  * `useSkeleton` isn't called here directly). Commits through `updateGeometry` (with empty
- * `normals` so `ClayObject.buildGeometry` recomputes them) so undo/redo stays intact.
+ * `normals` so `ClayObject.buildGeometry` recomputes them) so undo/redo stays intact. Disables
+ * mouse `OrbitControls` for the duration of a drag (via `orbitControls.ts`'s "vertex" reason,
+ * covering both the mouse and hand-pinch drag paths) so camera orbit doesn't fight a drag.
  */
 import { useEffect, useMemo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
@@ -16,6 +18,7 @@ import * as THREE from "three";
 import { useEditor } from "../store/editor";
 import { useHandState } from "../control/useHandState";
 import { pin } from "../physics/PhysicsWorld";
+import { setOrbitDisabled } from "./orbitControls";
 import type { SerializableGeometry } from "../types";
 
 const GROUP_PRECISION = 4;
@@ -76,6 +79,10 @@ export default function VertexEditHandles() {
     draggingViaHand.current = false;
   }, [selectedId]);
 
+  // Clear the disable reason on unmount so switching selection/mode mid-drag can't leave
+  // orbit stuck off.
+  useEffect(() => () => setOrbitDisabled("vertex", false), []);
+
   function beginPin() {
     if (object && object.physics !== "fixed" && !pinnedThisSession.current) {
       pin(object.id);
@@ -101,6 +108,7 @@ export default function VertexEditHandles() {
   function startDrag(group: PositionGroup, ray: THREE.Ray) {
     if (!groupRef.current) return;
     beginPin();
+    setOrbitDisabled("vertex", true);
     dragGroupKey.current = group.key;
     const camDir = new THREE.Vector3();
     camera.getWorldDirection(camDir);
@@ -134,6 +142,7 @@ export default function VertexEditHandles() {
     };
     const onUp = () => {
       dragGroupKey.current = null;
+      setOrbitDisabled("vertex", false);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
@@ -149,6 +158,7 @@ export default function VertexEditHandles() {
       if (draggingViaHand.current) {
         dragGroupKey.current = null;
         draggingViaHand.current = false;
+        setOrbitDisabled("vertex", false);
       }
       return;
     }
@@ -175,6 +185,7 @@ export default function VertexEditHandles() {
       if (!hand.isPinching) {
         dragGroupKey.current = null;
         draggingViaHand.current = false;
+        setOrbitDisabled("vertex", false);
         return;
       }
       const intersection = new THREE.Vector3();
