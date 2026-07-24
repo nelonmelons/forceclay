@@ -70,11 +70,10 @@ export default function Toolbar() {
         top: 16,
         right: 16,
         zIndex: 20,
-        maxWidth: 320,
         display: "flex",
         flexWrap: "wrap",
         gap: 6,
-        maxWidth: 260,
+        maxWidth: 300,
         justifyContent: "flex-end",
       }}
     >
