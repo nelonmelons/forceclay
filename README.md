@@ -25,9 +25,12 @@ all three processes.
 
 ### 1. Vision backend (`:6969`)
 
+**Requires Python 3.12** — `mediapipe==0.10.21` has no wheel for Python 3.13+, so the venv
+must be created with `python3.12` specifically (not whatever `python3` resolves to).
+
 ```bash
 cd backend
-python -m venv .venv && source .venv/bin/activate
+python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python webserver.py
 ```
@@ -38,7 +41,7 @@ python webserver.py
 cd emg
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python emg_server.py --mock   # no OpenBCI hardware required
+python emg_server.py --mock   # no OpenBCI hardware required; --mock only needs numpy+websockets
 # or, with a Cyton+Daisy board attached:
 python emg_server.py --serial-port /dev/tty.usbserial-XXXX
 ```
@@ -51,9 +54,27 @@ npm install
 npm run dev
 ```
 
-Then open the printed local URL. The frontend expects both backends running for the full
-experience; with no vision/EMG backends it still builds and renders the empty scene (and
-`scripts/mock_hand.ts` can drive a synthetic hand for offline UI dev).
+Then open the printed local URL. The app renders and stays usable even with no camera and
+no backends running — `getUserMedia`/WebSocket failures are caught, not thrown, and a
+connection-status readout (bottom-left) shows camera / vision / EMG health at a glance so
+you can tell what's actually connected.
+
+### Calibration + demo loop
+
+1. Once the EMG backend (or `--mock`) is connected, open the **CALIBRATION** panel
+   (top-right): click **1. Calibrate rest** and hold your forearm relaxed for ~3s, then
+   click **2. Calibrate max** and clench as hard as you comfortably can for ~3s. The panel
+   flips to "Session calibrated" once `EmgMessage.calibrated` is true.
+2. Press **`S`** (or click "Spawn clay", bottom-right) to spawn a sculptable clay sphere in
+   front of the camera.
+3. With a hand in view of the webcam: **open palm** molds/sculpts the clay under the
+   camera-ray cursor (force ramps the heat-glow), **pinch** grabs it once clench force
+   crosses the grab threshold (hysteresis release below it), and a hard clench while holding
+   triggers a squash-and-stretch pulse. Releasing with hand motion throws the object; physics
+   then drops/bounces it on the grid.
+
+With no hardware attached, `emg_server.py --mock` alone (no camera) is enough to see the
+HUD's force meter move and to exercise grab/squash by wiggling the mock force.
 
 ## Build / typecheck
 

@@ -7,8 +7,10 @@ import type { SerializableGeometry } from "../types.ts";
 
 /**
  * Builds a subdivided icosphere of the given radius/detail as starting clay geometry.
- * @remarks `detail` maps directly to three's `IcosahedronGeometry` subdivision level;
- * detail 4 yields ~2.5k vertices, a good balance of sculpt resolution vs. perf.
+ * @remarks `detail` maps directly to three's `IcosahedronGeometry` subdivision level, which
+ * subdivides each edge linearly (~10*detail^2+2 vertices) rather than exponentially — a low
+ * detail like 4 (~162 verts) is far too coarse to sculpt. Callers spawning clay should use
+ * `detail: 14` (~2.3k verts), the resolution the brush/BVH need for smooth deformation.
  * `IcosahedronGeometry` is non-indexed (duplicated verts per face) so we weld it with
  * `mergeVertices` to get the shared, indexed buffers the brush/BVH need.
  */

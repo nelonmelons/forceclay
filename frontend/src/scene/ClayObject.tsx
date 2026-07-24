@@ -2,7 +2,7 @@
  * Renders a single `SceneObject` — primitive geometry or `customGeometry` for sculpted clay
  * (Task C).
  */
-import { useMemo } from "react";
+import { useMemo, type Ref } from "react";
 import * as THREE from "three";
 import type { SceneObject } from "../types";
 
@@ -11,7 +11,7 @@ export interface ClayObjectProps {
 }
 
 /** Builds a three.js `BufferGeometry` for `object`, using `customGeometry` buffers when `geometry === "custom"`. */
-function buildGeometry(object: SceneObject): THREE.BufferGeometry {
+export function buildGeometry(object: SceneObject): THREE.BufferGeometry {
   const p = object.geometryParams ?? {};
   switch (object.geometry) {
     case "box":
@@ -48,8 +48,20 @@ function buildGeometry(object: SceneObject): THREE.BufferGeometry {
   }
 }
 
-/** Renders one `SceneObject` as a mesh, choosing primitive vs. custom `BufferGeometry`, with its material incl. emissive glow. */
-export default function ClayObject({ object }: ClayObjectProps) {
+export interface ClayMeshProps {
+  object: SceneObject;
+  /** Forwarded to the underlying `<mesh>` so callers (e.g. `PhysicsWorld`) can register it. */
+  meshRef?: Ref<THREE.Mesh>;
+}
+
+/**
+ * Shared mesh (geometry + material + `userData.objectId` tag) for one `SceneObject`, with no
+ * transform of its own — callers place it via a wrapping `<group>`/`<RigidBody>`.
+ * @remarks Reused by both `ClayObject` (standalone) and `PhysicsWorld`'s `SceneBody` so
+ * sculpted custom geometry and the emissive heat-glow render identically in both paths, and
+ * `useFusion`'s raycast can resolve `mesh.userData.objectId` regardless of which owns it.
+ */
+export function ClayMesh({ object, meshRef }: ClayMeshProps) {
   // Custom geometry is rebuilt whenever its buffers change (sculpt edits); primitives rebuild on param change.
   const geometry = useMemo(() => buildGeometry(object), [
     object.geometry,
@@ -59,12 +71,12 @@ export default function ClayObject({ object }: ClayObjectProps) {
 
   return (
     <mesh
+      ref={meshRef}
       geometry={geometry}
-      position={object.position}
-      rotation={object.rotation}
       scale={object.scale}
       castShadow
       receiveShadow
+      userData={{ objectId: object.id }}
     >
       <meshStandardMaterial
         color={object.material.color}
@@ -74,5 +86,14 @@ export default function ClayObject({ object }: ClayObjectProps) {
         emissiveIntensity={object.material.emissiveIntensity}
       />
     </mesh>
+  );
+}
+
+/** Renders one `SceneObject` standalone (position/rotation via a wrapping `<group>`, scale on the mesh itself via `ClayMesh`). */
+export default function ClayObject({ object }: ClayObjectProps) {
+  return (
+    <group position={object.position} rotation={object.rotation}>
+      <ClayMesh object={object} />
+    </group>
   );
 }

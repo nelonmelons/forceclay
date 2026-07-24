@@ -11,10 +11,11 @@
 import { Physics, RigidBody, type RapierRigidBody } from "@react-three/rapier";
 import { RigidBodyType } from "@dimforge/rapier3d-compat";
 import { useFrame } from "@react-three/fiber";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import * as THREE from "three";
 import { useEditor } from "../store/editor";
+import { ClayMesh } from "../scene/ClayObject";
 import type { SceneObject } from "../types";
 
 export interface PhysicsWorldProps {
@@ -52,41 +53,16 @@ function registerMesh(id: string, mesh: THREE.Object3D | null, baseScale: [numbe
   }
 }
 
-/** Builds a renderable+colliderable `BufferGeometry` for a `SceneObject`'s primitive or custom mesh. */
-function buildGeometry(object: SceneObject): THREE.BufferGeometry {
-  if (object.geometry === "custom" && object.customGeometry) {
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.Float32BufferAttribute(object.customGeometry.positions, 3));
-    geo.setAttribute("normal", new THREE.Float32BufferAttribute(object.customGeometry.normals, 3));
-    geo.setIndex(object.customGeometry.indices);
-    return geo;
-  }
-  const p = object.geometryParams ?? {};
-  switch (object.geometry) {
-    case "box":
-      return new THREE.BoxGeometry(p.width ?? 1, p.height ?? 1, p.depth ?? 1);
-    case "sphere":
-      return new THREE.SphereGeometry(p.radius ?? 0.5, p.widthSegments ?? 32, p.heightSegments ?? 16);
-    case "cylinder":
-      return new THREE.CylinderGeometry(p.radiusTop ?? 0.5, p.radiusBottom ?? 0.5, p.height ?? 1, p.radialSegments ?? 32);
-    case "cone":
-      return new THREE.ConeGeometry(p.radius ?? 0.5, p.height ?? 1, p.radialSegments ?? 32);
-    case "torus":
-      return new THREE.TorusGeometry(p.radius ?? 0.5, p.tube ?? 0.2, p.radialSegments ?? 16, p.tubularSegments ?? 32);
-    case "plane":
-      return new THREE.PlaneGeometry(p.width ?? 1, p.height ?? 1);
-    default:
-      return new THREE.SphereGeometry(0.5, 16, 16);
-  }
-}
-
 interface SceneBodyProps {
   object: SceneObject;
 }
 
-/** One `SceneObject` rendered as a mesh inside a Rapier `RigidBody`, registered for grab/squash. */
+/**
+ * One `SceneObject` rendered as a `ClayMesh` inside a Rapier `RigidBody`, registered for
+ * grab/squash. Geometry+material building is shared with `ClayObject` via `ClayMesh` so
+ * sculpted geometry and emissive heat-glow are identical in both render paths.
+ */
 function SceneBody({ object }: SceneBodyProps) {
-  const geometry = useMemo(() => buildGeometry(object), [object.geometry, object.geometryParams, object.customGeometry]);
   const bodyRef = useRef<RapierRigidBody>(null);
   const meshRef = useRef<THREE.Mesh>(null);
 
@@ -112,27 +88,28 @@ function SceneBody({ object }: SceneBodyProps) {
       restitution={0.5}
       friction={0.8}
     >
-      <mesh ref={meshRef} geometry={geometry} scale={object.scale} castShadow receiveShadow>
-        <meshStandardMaterial
-          color={object.material.color}
-          metalness={object.material.metalness}
-          roughness={object.material.roughness}
-          emissive={object.material.emissive}
-          emissiveIntensity={object.material.emissiveIntensity}
-        />
-      </mesh>
+      <ClayMesh object={object} meshRef={meshRef} />
     </RigidBody>
   );
 }
 
-/** Maps every store `SceneObject` to a physics-backed `SceneBody`, kept in sync via the store subscription. */
+/**
+ * Maps every store `SceneObject` to a physics-backed `SceneBody`, kept in sync via the store
+ * subscription.
+ * @remarks Keyed by `${id}-${physics}` (not just `id`) so flipping an object between
+ * "fixed"/"dynamic" remounts the `RigidBody` — Rapier's `colliders="hull"` collider is only
+ * (re)computed from the current mesh geometry at mount time, so a remount is required to pick
+ * up both the body-type change and any sculpt edits made while it was fixed.
+ */
 function SceneBodies() {
   const objects = useEditor((s) => s.objects);
   return (
     <>
-      {objects.map((object) => (
-        <SceneBody key={object.id} object={object} />
-      ))}
+      {objects
+        .filter((o) => o.visible)
+        .map((object) => (
+          <SceneBody key={`${object.id}-${object.physics}`} object={object} />
+        ))}
     </>
   );
 }

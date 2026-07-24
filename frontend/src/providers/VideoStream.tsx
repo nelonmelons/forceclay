@@ -8,6 +8,8 @@ export interface VideoStreamApi {
   videoRef: RefObject<HTMLVideoElement | null>;
   /** Draws the current mirrored video frame to an offscreen canvas and returns a JPEG ArrayBuffer (quality ~0.5). */
   captureFrame(): Promise<ArrayBuffer | null>;
+  /** "pending" while awaiting `getUserMedia`, "ready" once a stream is attached, "error" if denied/unavailable. */
+  getStatus(): "pending" | "ready" | "error";
 }
 
 const VideoStreamContext = createContext<VideoStreamApi | null>(null);
@@ -19,10 +21,16 @@ const FRAME_HEIGHT = 360;
 export function VideoStreamProvider({ children }: { children: ReactNode }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const statusRef = useRef<"pending" | "ready" | "error">("pending");
 
   useEffect(() => {
     let stream: MediaStream | null = null;
     let cancelled = false;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      statusRef.current = "error";
+      console.warn("VideoStreamProvider: getUserMedia unsupported in this environment");
+      return;
+    }
     navigator.mediaDevices
       .getUserMedia({ video: { width: { ideal: FRAME_WIDTH }, height: { ideal: FRAME_HEIGHT } } })
       .then((s) => {
@@ -31,12 +39,17 @@ export function VideoStreamProvider({ children }: { children: ReactNode }) {
           return;
         }
         stream = s;
+        statusRef.current = "ready";
         if (videoRef.current) {
           videoRef.current.srcObject = s;
           videoRef.current.play().catch(() => {});
         }
       })
-      .catch((err) => console.error("VideoStreamProvider: getUserMedia failed", err));
+      .catch((err) => {
+        // No camera / permission denied — app must keep running without hand tracking.
+        statusRef.current = "error";
+        console.warn("VideoStreamProvider: getUserMedia failed", err);
+      });
     return () => {
       cancelled = true;
       stream?.getTracks().forEach((t) => t.stop());
@@ -68,7 +81,7 @@ export function VideoStreamProvider({ children }: { children: ReactNode }) {
     });
   };
 
-  const api: VideoStreamApi = { videoRef, captureFrame };
+  const api: VideoStreamApi = { videoRef, captureFrame, getStatus: () => statusRef.current };
   return (
     <VideoStreamContext.Provider value={api}>
       <video ref={videoRef} style={{ display: "none" }} muted playsInline />
