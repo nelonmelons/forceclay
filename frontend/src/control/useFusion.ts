@@ -12,11 +12,21 @@
  *     object and pins it on first deform so it doesn't fall while being worked.
  *   - `"select"`/`"physics"` grab/carry via the primary hand's `isPinching` (all-5-fingertip
  *     cluster; no force gating) with hold-to-pin: holding the carry point within a small radius
- *     for ~1.5s auto-pins the object in place. Objects do NOT rotate with the hand (no
- *     twist-to-rotate — ShapeShift has no such mechanic either).
+ *     for ~1.5s auto-pins the object in place (monotonic progress; a "pinch consumed" latch
+ *     stops the same pinch from instantly re-grabbing the just-pinned object). Objects do NOT
+ *     rotate with the hand while carried (no twist-to-rotate here — see `"rotate"` below).
  *   - `"delete"` hover-highlights the object under the cursor (via `useFusionStatus`) and
  *     removes it on pinch.
- *   - `"move"`/`"rotate"`/`"scale"` are gizmo-owned; this hook does not grab in those modes.
+ *   - `"move"` is gizmo-owned; this hook does not grab in that mode.
+ *   - `"rotate"`/`"scale"` pinch-grab the hovered/target object (same proximity-target logic as
+ *     `"select"`) and pin it for the duration of the manipulation so it doesn't fall. Camera
+ *     navigation is fully disabled in these two modes so both hands are free for manipulation.
+ *     Rotate: one hand pinching twists the object about the camera's forward axis by the hand's
+ *     roll delta; both hands pinching instead tilts/twists it about an arbitrary axis derived
+ *     from the change in the vector between the two hands (cursor + depth). Scale: uniform-
+ *     scales the object by an exponential function of the hand's depth-proxy delta since
+ *     grab-start (pulling the hand back grows the object). Neither mode translates the object.
+ *     The mouse gizmo keeps working alongside hand manipulation in both.
  *   - `"edit"` is vertex-handle-owned (`VertexEditHandles`); this hook does not grab/sculpt.
  *
  * Must be called from a component mounted *inside* the r3f `<Canvas>` (it uses `useFrame`/
@@ -37,7 +47,7 @@ import { useEmgSocket } from "../providers/EmgSocket";
 import { useSkeleton, getPrimaryHand, FRAME_WIDTH, FRAME_HEIGHT } from "../hands/useSkeleton";
 import { useEditor } from "../store/editor";
 import { applyBrush } from "../sculpt/brush";
-import { grab, release, pin, getBodyPosition } from "../physics/PhysicsWorld";
+import { grab, release, pin, getBodyPosition, setBodyRotation } from "../physics/PhysicsWorld";
 import { BRUSH_RADIUS } from "../contracts";
 import { useFusionStatus } from "./fusionStatus";
 import { useHandState } from "./useHandState";
@@ -54,8 +64,11 @@ export interface FusionFrame {
   hasHit: boolean;
 }
 
-/** World-space radius the carry point must stay within to keep charging hold-to-pin. */
-const PIN_RADIUS = 0.15;
+/** World-space radius the carry point must stay within to keep charging hold-to-pin. Judged
+ *  against the RAW (pre-lerp) drag target, not the smoothed carry position — the smoothed
+ *  position keeps creeping toward the target every frame under the `CARRY_LERP`, which at a
+ *  tight radius spuriously looked like "jitter" and reset the timer forever. */
+const PIN_RADIUS = 0.22;
 /** Seconds the carry point must stay within `PIN_RADIUS` before auto-pinning. */
 const PIN_DURATION = 1.5;
 /** Smoothing for the carried object's position (ShapeShift lerps ~0.1; lower = smoother/laggier). */
@@ -66,11 +79,34 @@ const THROW_GAIN = 40;
  *  doesn't land a direct hit — mirrors ShapeShift's `pointer.distanceTo(pos2D) < TOLERANCE`
  *  proximity highlight. Generous so a noisy hand cursor can still target a small object. */
 const PROXIMITY_NDC = 0.28;
+/** Ignore hand-roll deltas smaller than this (radians) so micro-jitter doesn't dribble rotation. */
+const ROTATE_DEADZONE = 0.01;
+/** Sensitivity of pinch-to-scale: exponent applied to the depth-proxy delta since grab-start. */
+const SCALE_SENS = 3.5;
+/** Uniform-scale clamp bounds (multiplier of the object's scale at grab-start). */
+const SCALE_MIN = 0.2;
+const SCALE_MAX = 5;
+/** Two-hand rotate: how much weight `depthProxy` gets as the "z" component of each hand's
+ *  cursor+depth vector, relative to NDC's -1..1 xy range — picked so a natural push/pull
+ *  produces a z swing comparable to an xy swing across the frame. */
+const ROTATE_2HAND_DEPTH_SCALE = 1.5;
+/** Minimum inter-hand vector length (in the same units as above) below which two-hand rotation
+ *  is skipped — hands too close together make the vector's direction numerically unstable. */
+const ROTATE_2HAND_MIN_VEC = 1e-3;
 /** Sculpt writes are throttled to roughly this many Hz to keep BVH rebuilds affordable. */
 const SCULPT_HZ = 30;
 /** Warm emissive color clay ramps toward as sculpt force rises. */
 const HOT_COLOR = new THREE.Color("#ff6a1f");
 const COLD_COLOR = new THREE.Color("#000000");
+
+/** Shortest-path angular difference `a - b`, wrapped to (-PI, PI]; used for roll-delta rotation
+ *  so the wrap seam at +-PI never produces a spurious full-circle jump. */
+function angleDiff(a: number, b: number): number {
+  let d = a - b;
+  while (d > Math.PI) d -= 2 * Math.PI;
+  while (d < -Math.PI) d += 2 * Math.PI;
+  return d;
+}
 
 /** Walks up from `obj` looking for a `userData.objectId` tag (set by `ClayObject`). */
 function findObjectId(obj: THREE.Object3D | null): string | null {
@@ -106,6 +142,21 @@ export function useFusion(): FusionFrame {
   const dragOffset = useRef(new THREE.Vector3());
   const carryPos = useRef(new THREE.Vector3());
   const lastCarryPos = useRef(new THREE.Vector3());
+  /** Latches true the instant hold-to-pin auto-pins an object, so the SAME still-active pinch
+   *  can't immediately re-grab it and restart the timer at 0. Clears the moment the hand
+   *  un-pinches (or drops out of frame). */
+  const pinchConsumed = useRef(false);
+  /** `"rotate"`/`"scale"` pinch-manipulation state: the object currently grabbed, plus the
+   *  hand-pose and object-pose snapshots taken at grab-start that each frame's delta is measured
+   *  against (avoids drift from accumulating small per-frame deltas). */
+  const manipId = useRef<string | null>(null);
+  const manipStartRoll = useRef(0);
+  const manipStartRotation = useRef<[number, number, number]>([0, 0, 0]);
+  const manipStartDepth = useRef(0);
+  const manipStartScale = useRef<[number, number, number]>([1, 1, 1]);
+  /** Two-hand rotate: previous frame's (right-hand - left-hand) cursor+depth vector, for
+   *  deriving an arbitrary-axis delta rotation. Null whenever both hands aren't pinching. */
+  const prevInterHandVec = useRef<THREE.Vector3 | null>(null);
   /** Previous-frame cursor positions (px) for each holding hand, and previous inter-hand
    *  distance (px), used to derive per-frame deltas for camera rotate/pan/dolly. Reset to null
    *  whenever that hand stops holding. */
@@ -140,45 +191,55 @@ export function useFusion(): FusionFrame {
     let hitLocal: [number, number, number] = [0, 0, 0];
     let normalLocal: [number, number, number] = [0, 0, 1];
 
-    // Camera navigation runs in every mode, independent of the mode-branch below: one hand
-    // holding (thumb-index pinch, stable ~50ms) orbits the camera; both hands holding pans
-    // (from the left hand's delta) and dollies (from the change in inter-hand distance).
-    // Mirrors ShapeShift's HolohandsOverlay per-frame wiring exactly.
+    // Camera navigation runs in every mode EXCEPT "rotate"/"scale", independent of the
+    // mode-branch below: one hand holding (thumb-index pinch, stable ~50ms) orbits the camera;
+    // both hands holding pans (from the left hand's delta) and dollies (from the change in
+    // inter-hand distance). Mirrors ShapeShift's HolohandsOverlay per-frame wiring exactly.
     // A grab cluster (isPinching, all 5 fingertips) also satisfies isHolding (thumb-index), so
     // exclude pinching hands from camera-nav — otherwise picking an object up also rotates the
-    // camera. Small per-frame deltas are deadzoned so hand jitter can't drift/zoom "for no reason".
-    const leftHold = (hands.left?.isHolding ?? false) && !(hands.left?.isPinching ?? false);
-    const rightHold = (hands.right?.isHolding ?? false) && !(hands.right?.isPinching ?? false);
-    const NAV_DEADZONE = 0.006;
-    if (leftHold && rightHold && hands.left && hands.right) {
-      const L = hands.left.cursorPx;
-      const R = hands.right.cursorPx;
-      const prevL = prevLeftCursor.current;
-      const dxN = (L.x - (prevL?.x ?? L.x)) / FRAME_WIDTH;
-      const dyN = (L.y - (prevL?.y ?? L.y)) / FRAME_HEIGHT;
-      if (Math.abs(dxN) > NAV_DEADZONE || Math.abs(dyN) > NAV_DEADZONE) orbitPan(dxN, dyN);
-      prevLeftCursor.current = { x: L.x, y: L.y };
-
-      const currDist = Math.hypot(R.x - L.x, R.y - L.y);
-      if (prevHandDist.current != null) {
-        const deltaZoom = (prevHandDist.current - currDist) / FRAME_WIDTH;
-        if (Math.abs(deltaZoom) > NAV_DEADZONE) orbitDolly(deltaZoom);
-      }
-      prevHandDist.current = currDist;
-      prevRightCursor.current = { x: R.x, y: R.y };
-    } else if ((leftHold && hands.left) || (rightHold && hands.right)) {
-      const H = rightHold ? hands.right! : hands.left!;
-      const prev = rightHold ? prevRightCursor.current : prevLeftCursor.current;
-      const dxN = (H.cursorPx.x - (prev?.x ?? H.cursorPx.x)) / FRAME_WIDTH;
-      const dyN = (H.cursorPx.y - (prev?.y ?? H.cursorPx.y)) / FRAME_HEIGHT;
-      if (Math.abs(dxN) > NAV_DEADZONE || Math.abs(dyN) > NAV_DEADZONE) orbitRotate(dxN, dyN);
-      if (rightHold) prevRightCursor.current = { x: H.cursorPx.x, y: H.cursorPx.y };
-      else prevLeftCursor.current = { x: H.cursorPx.x, y: H.cursorPx.y };
-      prevHandDist.current = null;
-    } else {
+    // camera. No deadzone here — mirrors ShapeShift's HolohandsOverlay exactly, which applies
+    // orbitPan/orbitDolly/orbitRotate unconditionally to the raw per-frame cursor delta; adding
+    // a deadzone made nav feel dead/laggy instead of preventing drift.
+    if (interactionMode === "rotate" || interactionMode === "scale") {
+      // In these two modes both hands are dedicated to manipulating the grabbed object, not the
+      // camera — a pinch/twist/pull must never also pan/zoom/orbit the view. Reset trackers so
+      // nav doesn't see a stale delta and jump the moment it's re-enabled in another mode.
       prevLeftCursor.current = null;
       prevRightCursor.current = null;
       prevHandDist.current = null;
+    } else {
+      const leftHold = (hands.left?.isHolding ?? false) && !(hands.left?.isPinching ?? false);
+      const rightHold = (hands.right?.isHolding ?? false) && !(hands.right?.isPinching ?? false);
+      if (leftHold && rightHold && hands.left && hands.right) {
+        const L = hands.left.cursorPx;
+        const R = hands.right.cursorPx;
+        const prevL = prevLeftCursor.current;
+        const dxN = (L.x - (prevL?.x ?? L.x)) / FRAME_WIDTH;
+        const dyN = (L.y - (prevL?.y ?? L.y)) / FRAME_HEIGHT;
+        orbitPan(dxN, dyN);
+        prevLeftCursor.current = { x: L.x, y: L.y };
+
+        const currDist = Math.hypot(R.x - L.x, R.y - L.y);
+        if (prevHandDist.current != null) {
+          const deltaZoom = (prevHandDist.current - currDist) / FRAME_WIDTH;
+          orbitDolly(deltaZoom);
+        }
+        prevHandDist.current = currDist;
+        prevRightCursor.current = { x: R.x, y: R.y };
+      } else if ((leftHold && hands.left) || (rightHold && hands.right)) {
+        const H = rightHold ? hands.right! : hands.left!;
+        const prev = rightHold ? prevRightCursor.current : prevLeftCursor.current;
+        const dxN = (H.cursorPx.x - (prev?.x ?? H.cursorPx.x)) / FRAME_WIDTH;
+        const dyN = (H.cursorPx.y - (prev?.y ?? H.cursorPx.y)) / FRAME_HEIGHT;
+        orbitRotate(dxN, dyN);
+        if (rightHold) prevRightCursor.current = { x: H.cursorPx.x, y: H.cursorPx.y };
+        else prevLeftCursor.current = { x: H.cursorPx.x, y: H.cursorPx.y };
+        prevHandDist.current = null;
+      } else {
+        prevLeftCursor.current = null;
+        prevRightCursor.current = null;
+        prevHandDist.current = null;
+      }
     }
 
     if (hand) {
@@ -229,6 +290,11 @@ export function useFusion(): FusionFrame {
     let pinProgress = 0;
     let pinningId: string | null = null;
 
+    // The "pinch consumed" latch (set the instant hold-to-pin auto-pins something) only clears
+    // once the hand actually un-pinches — checked once per frame, independent of mode, so it
+    // can't get stuck latched if the mode changes mid-pinch.
+    if (!hand || !hand.isPinching) pinchConsumed.current = false;
+
     if (interactionMode !== "select" && interactionMode !== "physics" && heldId.current) {
       // Left a grab-capable mode while still holding something — drop it where it is.
       try {
@@ -239,6 +305,13 @@ export function useFusion(): FusionFrame {
         heldId.current = null;
         holdStartPos.current = null;
       }
+    }
+    if (interactionMode !== "rotate" && interactionMode !== "scale" && manipId.current) {
+      // Left rotate/scale mode mid-manipulation — leave the object pinned where it is and just
+      // drop our tracking so re-entering the mode starts a fresh grab instead of applying a
+      // stale delta.
+      manipId.current = null;
+      prevInterHandVec.current = null;
     }
 
     if (interactionMode === "warp") {
@@ -269,7 +342,7 @@ export function useFusion(): FusionFrame {
       // hand cursor doesn't jitter the object. No raw ray-hit-follow (that fed back on itself).
       try {
         if (!heldId.current) {
-          if (targetId && targetWorld && hand && hand.isPinching) {
+          if (targetId && targetWorld && hand && hand.isPinching && !pinchConsumed.current) {
             const objWorld = targetWorld.clone();
             const camForward = camera.getWorldDirection(new THREE.Vector3());
             dragPlane.current.setFromNormalAndCoplanarPoint(camForward, objWorld);
@@ -301,20 +374,28 @@ export function useFusion(): FusionFrame {
             // hand-size depth proxy is too noisy and made held objects drift toward the camera —
             // "enlarge" — on their own. The plane keeps a stable grab depth.)
             const target = new THREE.Vector3();
+            let rawTarget: THREE.Vector3 | null = null;
             if (raycaster.ray.intersectPlane(dragPlane.current, target)) {
               target.add(dragOffset.current);
+              rawTarget = target;
               lastCarryPos.current.copy(carryPos.current);
               carryPos.current.lerp(target, CARRY_LERP);
               grab(held, [carryPos.current.x, carryPos.current.y, carryPos.current.z]);
             }
 
-            // Hold-to-pin, judged on the smoothed carry position.
+            // Hold-to-pin, judged on the RAW (pre-lerp) drag target rather than the smoothed
+            // carry position: under a steady hold, `carryPos` keeps creeping toward the target
+            // every frame (CARRY_LERP never fully catches up), which at the old tight radius
+            // read as "jitter" and reset the timer before it could ever reach 100%. The raw
+            // target has no such creep, so a genuinely steady hand advances progress
+            // monotonically to 1.0 exactly once, instead of looping.
             const now = state.clock.getElapsedTime();
+            const stabilityPoint = rawTarget ?? carryPos.current;
             if (!holdStartPos.current) {
-              holdStartPos.current = carryPos.current.clone();
+              holdStartPos.current = stabilityPoint.clone();
               holdStartTime.current = now;
-            } else if (holdStartPos.current.distanceTo(carryPos.current) > PIN_RADIUS) {
-              holdStartPos.current = carryPos.current.clone();
+            } else if (holdStartPos.current.distanceTo(stabilityPoint) > PIN_RADIUS) {
+              holdStartPos.current = stabilityPoint.clone();
               holdStartTime.current = now;
             } else {
               const progress = Math.min((now - holdStartTime.current) / PIN_DURATION, 1);
@@ -326,12 +407,121 @@ export function useFusion(): FusionFrame {
                 holdStartPos.current = null;
                 pinProgress = 0;
                 pinningId = null;
+                // The hand is very likely still pinching this exact frame — latch so the
+                // grab-start branch above can't immediately re-grab the object we just pinned
+                // and restart the hold-to-pin timer from 0. Clears on the next un-pinch.
+                pinchConsumed.current = true;
               }
             }
           }
         }
       } catch {
         // Physics stubs may still throw notImplemented; fusion loop stays alive regardless.
+      }
+    } else if (interactionMode === "rotate") {
+      // Pinch-twist/tilt: grab the hovered/target object (same proximity logic as select/grab),
+      // pin it so it doesn't fall, then rotate it with the hand(s). No translation.
+      // - One hand pinching: twist (hand roll) rotates about the camera's forward axis only.
+      //   Measured from a grab-start snapshot (not accumulated per-frame) so floating-point/
+      //   roll-wrap error can't drift the object over a long hold.
+      // - Both hands pinching: tilting/twisting the pair rotates about an arbitrary axis,
+      //   derived from how the vector between the two hands (cursor + depth) changes frame to
+      //   frame. This one IS incremental (each frame's delta composed onto the live rotation)
+      //   since "distance from a start vector" isn't a stable baseline the way roll-from-start is.
+      try {
+        const leftPinch = hands.left?.isPinching ?? false;
+        const rightPinch = hands.right?.isPinching ?? false;
+        const twoHandPinch = leftPinch && rightPinch && !!hands.left && !!hands.right;
+
+        if (!manipId.current) {
+          if (targetId && (twoHandPinch || hand?.isPinching)) {
+            pin(targetId);
+            manipId.current = targetId;
+            manipStartRoll.current = hand?.roll ?? 0;
+            const obj = editor.objects.find((o) => o.id === targetId);
+            manipStartRotation.current = obj ? [...obj.rotation] : [0, 0, 0];
+            prevInterHandVec.current = null;
+          }
+        } else if (twoHandPinch) {
+          const L = hands.left!;
+          const R = hands.right!;
+          const leftVec = new THREE.Vector3(L.cursorNdc.x, L.cursorNdc.y, L.depthProxy * ROTATE_2HAND_DEPTH_SCALE);
+          const rightVec = new THREE.Vector3(R.cursorNdc.x, R.cursorNdc.y, R.depthProxy * ROTATE_2HAND_DEPTH_SCALE);
+          const interHandVec = rightVec.sub(leftVec);
+          const prevVec = prevInterHandVec.current;
+          if (prevVec && interHandVec.length() > ROTATE_2HAND_MIN_VEC && prevVec.length() > ROTATE_2HAND_MIN_VEC) {
+            const deltaQuat = new THREE.Quaternion().setFromUnitVectors(
+              prevVec.clone().normalize(),
+              interHandVec.clone().normalize(),
+            );
+            const angle = 2 * Math.acos(THREE.MathUtils.clamp(deltaQuat.w, -1, 1));
+            if (angle > ROTATE_DEADZONE) {
+              const obj = editor.objects.find((o) => o.id === manipId.current);
+              if (obj) {
+                const currentQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(...obj.rotation));
+                const nextQuat = deltaQuat.multiply(currentQuat);
+                const nextEuler = new THREE.Euler().setFromQuaternion(nextQuat);
+                const rotation: [number, number, number] = [nextEuler.x, nextEuler.y, nextEuler.z];
+                editor.updateTransform(manipId.current, { rotation });
+                setBodyRotation(manipId.current, rotation);
+              }
+            }
+          }
+          prevInterHandVec.current = interHandVec;
+        } else if (hand && hand.isPinching) {
+          if (prevInterHandVec.current !== null) {
+            // Was two-hand last frame; re-snapshot the one-hand baseline against the object's
+            // CURRENT (already two-hand-rotated) pose so the switch doesn't jump.
+            manipStartRoll.current = hand.roll;
+            const obj = editor.objects.find((o) => o.id === manipId.current);
+            manipStartRotation.current = obj ? [...obj.rotation] : [0, 0, 0];
+            prevInterHandVec.current = null;
+          }
+          const deltaRoll = angleDiff(hand.roll, manipStartRoll.current);
+          if (Math.abs(deltaRoll) > ROTATE_DEADZONE) {
+            const camForward = camera.getWorldDirection(new THREE.Vector3()).normalize();
+            const twist = new THREE.Quaternion().setFromAxisAngle(camForward, deltaRoll);
+            const baseQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(...manipStartRotation.current));
+            const nextQuat = twist.multiply(baseQuat);
+            const nextEuler = new THREE.Euler().setFromQuaternion(nextQuat);
+            const rotation: [number, number, number] = [nextEuler.x, nextEuler.y, nextEuler.z];
+            editor.updateTransform(manipId.current, { rotation });
+            setBodyRotation(manipId.current, rotation);
+          }
+        } else {
+          manipId.current = null;
+          prevInterHandVec.current = null;
+        }
+      } catch {
+        // Physics/store stubs may still throw; fusion loop stays alive regardless.
+      }
+    } else if (interactionMode === "scale") {
+      // Pinch-and-pull: grab the hovered/target object, pin it, then move the hand toward/away
+      // from the camera to uniform-scale it. No translation/rotation. `depthProxy` shrinks as
+      // the hand gets closer to the camera (bigger on screen), so pulling the hand BACK (away)
+      // raises depthProxy and — per SCALE_SENS's sign — grows the object.
+      try {
+        if (!manipId.current) {
+          if (targetId && hand?.isPinching) {
+            pin(targetId);
+            manipId.current = targetId;
+            manipStartDepth.current = hand.depthProxy;
+            const obj = editor.objects.find((o) => o.id === targetId);
+            manipStartScale.current = obj ? [...obj.scale] : [1, 1, 1];
+          }
+        } else if (!hand || !hand.isPinching) {
+          manipId.current = null;
+        } else {
+          const factor = THREE.MathUtils.clamp(
+            Math.exp((hand.depthProxy - manipStartDepth.current) * SCALE_SENS),
+            SCALE_MIN,
+            SCALE_MAX,
+          );
+          const [sx, sy, sz] = manipStartScale.current;
+          editor.updateTransform(manipId.current, { scale: [sx * factor, sy * factor, sz * factor] });
+        }
+      } catch {
+        // Store stubs may still throw; fusion loop stays alive regardless.
       }
     } else if (interactionMode === "delete") {
       if (hand?.isPinching && !wasPinching.current && hoveredObjectId) {

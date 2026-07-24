@@ -17,6 +17,8 @@ const CANVAS_DIAG = Math.hypot(FRAME_WIDTH, FRAME_HEIGHT);
 const CURSOR_EMA = 0.2;
 /** ShapeShift holds the thumb-index distance history over this window to judge `isHolding`. */
 const HOLD_STABILITY_WINDOW_MS = 50;
+/** Smoothing for the wrist->middle-MCP roll angle used by pinch-to-rotate. */
+const ROLL_EMA = 0.3;
 
 type Side = "Left" | "Right";
 const SIDES: Side[] = ["Left", "Right"];
@@ -24,10 +26,21 @@ const SIDES: Side[] = ["Left", "Right"];
 /** Module-scoped smoothing/history state, per hand — this is a per-frame fusion loop, not a React hook. */
 let prevCursor: Record<Side, { x: number; y: number } | null> = { Left: null, Right: null };
 let holdDistHistory: Record<Side, { t: number; d: number }[]> = { Left: [], Right: [] };
+let prevRoll: Record<Side, number | null> = { Left: null, Right: null };
 
 function resetSide(side: Side): void {
   prevCursor[side] = null;
   holdDistHistory[side] = [];
+  prevRoll[side] = null;
+}
+
+/** Shortest-path angular difference `a - b`, wrapped to (-PI, PI]; avoids the EMA jumping when
+ *  the raw angle crosses the +-PI seam. */
+function angleDiff(a: number, b: number): number {
+  let d = a - b;
+  while (d > Math.PI) d -= 2 * Math.PI;
+  while (d < -Math.PI) d += 2 * Math.PI;
+  return d;
 }
 
 /** Computes one hand's `HandInfo`, reading/writing that hand's module-level smoothing state. */
@@ -77,6 +90,15 @@ function computeHandInfo(hand: VisionHand): HandInfo {
   const std = Math.sqrt(variance);
   const isHolding = avg < 0.25 * spread && std < 0.05 * spread;
 
+  // Roll: angle of the wrist->middle-finger-MCP vector, EMA-smoothed via shortest angular path
+  // so the seam at +-PI doesn't cause a smoothing spike.
+  const wrist = hand.landmarks[0];
+  const middleMcp = hand.landmarks[9];
+  const rawRoll = Math.atan2(middleMcp[1] - wrist[1], middleMcp[0] - wrist[0]);
+  const prevR = prevRoll[side];
+  const roll = prevR == null ? rawRoll : prevR + angleDiff(rawRoll, prevR) * ROLL_EMA;
+  prevRoll[side] = roll;
+
   return {
     cursorPx,
     cursorNdc: {
@@ -87,6 +109,7 @@ function computeHandInfo(hand: VisionHand): HandInfo {
     isPinching,
     isOpen,
     isHolding,
+    roll,
   };
 }
 

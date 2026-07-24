@@ -25,6 +25,9 @@ export interface HandInfo {
   isOpen: boolean;
   /** Thumb-index tip distance < 0.25*handSpread, stable ~50ms — camera-navigation gesture. */
   isHolding: boolean;
+  /** Hand roll (radians): angle of the wrist(0)->middle-finger-MCP(9) vector, EMA-smoothed and
+   *  wraparound-safe. Drives pinch-to-rotate (twist) in `"rotate"` mode. */
+  roll: number;
 }
 
 /** Per-frame state for both hands, keyed by MediaPipe `handedness`. Either side may be absent. */

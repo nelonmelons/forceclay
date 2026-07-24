@@ -38,6 +38,9 @@ const squashCurrent = new Map<string, number>();
 const SQUASH_RISE = 0.35; // ease-in rate toward the requested force
 const SQUASH_DECAY = 0.88; // per-frame decay of the requested force (creates "ease back" without an explicit un-squash call)
 const SQUASH_EPSILON = 0.002; // below this, snap back to rest and stop updating
+/** Hard cap on release/throw speed (units/sec) so an aggressive throw can't move fast enough
+ *  to tunnel through the floor collider within a single physics step, even with CCD off. */
+const MAX_RELEASE_SPEED = 15;
 
 function registerBody(id: string, body: RapierRigidBody | null): void {
   if (body) bodies.set(id, body);
@@ -93,6 +96,9 @@ function SceneBody({ object }: SceneBodyProps) {
       rotation={object.rotation}
       restitution={0.5}
       friction={0.8}
+      // Continuous collision detection: a fast-falling/thrown dynamic body can otherwise cross
+      // the whole floor collider within a single physics step ("tunneling") and fall through it.
+      ccd={object.physics === "dynamic"}
     >
       <ClayMesh
         object={object}
@@ -171,15 +177,18 @@ function applyScale(id: string, f: number): void {
  * Root Rapier physics provider for the scene: gravity, a static ground plane (so dropped/
  * dynamic objects land instead of falling forever), all store scene bodies, and the
  * grab/squash frame loop.
- * @remarks The ground is a thin fixed cuboid collider whose top surface sits at y=0 to line up
- * with the visual `Grid` in `Viewport`. `colliders={false}` on the body means only the explicit
- * `CuboidCollider` is used (no auto-collider from children, since it has none).
+ * @remarks The ground is a THICK (10-unit) fixed cuboid collider whose top surface still sits
+ * at y=0 to line up with the visual `Grid` in `Viewport` (center at y=-5, half-height 5) — a
+ * thin slab let fast-falling/thrown bodies tunnel through it in a single physics step; see also
+ * `ccd` on dynamic `SceneBody` bodies and the velocity clamp in `release()`, which attack the
+ * same tunneling failure mode from the other two sides. `colliders={false}` on the body means
+ * only the explicit `CuboidCollider` is used (no auto-collider from children, since it has none).
  */
 export default function PhysicsWorld({ children }: PhysicsWorldProps) {
   return (
     <Physics gravity={[0, -9.81, 0]}>
-      <RigidBody type="fixed" colliders={false} position={[0, -0.05, 0]}>
-        <CuboidCollider args={[50, 0.05, 50]} restitution={0.5} friction={0.9} />
+      <RigidBody type="fixed" colliders={false} position={[0, -5, 0]}>
+        <CuboidCollider args={[50, 5, 50]} restitution={0.5} friction={0.9} />
       </RigidBody>
       <SceneBodies />
       <PhysicsRuntime />
@@ -203,7 +212,8 @@ export function grab(id: string, handWorldPos: [number, number, number]): void {
 
 /**
  * Releases object `id` back to dynamic simulation, inheriting `velocity` (a fast release
- * throws it). Also marks the object `"dynamic"` in the scene store.
+ * throws it), clamped to `MAX_RELEASE_SPEED` so an aggressive throw can't tunnel through the
+ * floor collider. Also marks the object `"dynamic"` in the scene store.
  * @remarks The store `setPhysics` call is best-effort: it's swallowed if the store or the id
  * isn't wired up (e.g. a standalone debug body), so the physics loop never crashes on it.
  */
@@ -212,7 +222,10 @@ export function release(id: string, velocity: [number, number, number]): void {
   const body = bodies.get(id);
   if (body) {
     body.setBodyType(RigidBodyType.Dynamic, true);
-    body.setLinvel({ x: velocity[0], y: velocity[1], z: velocity[2] }, true);
+    const v = new THREE.Vector3(velocity[0], velocity[1], velocity[2]);
+    const speed = v.length();
+    if (speed > MAX_RELEASE_SPEED) v.multiplyScalar(MAX_RELEASE_SPEED / speed);
+    body.setLinvel({ x: v.x, y: v.y, z: v.z }, true);
   }
   try {
     useEditor.getState().setPhysics(id, "dynamic");
@@ -256,6 +269,20 @@ export function pin(id: string): void {
   } catch {
     // Store action not wired for this id yet (e.g. debug-only body) — ignore.
   }
+}
+
+/**
+ * Directly sets rigid body `id`'s rotation (Euler radians, XYZ order) via Rapier's `setRotation`.
+ * @remarks `<RigidBody rotation={...}>` only seeds the initial pose at mount; it does not
+ * reactively re-apply on prop changes. Pinch-twist rotation (rotate mode) therefore drives the
+ * body directly here, while the store's `updateTransform` stays the source of truth for
+ * serialization/undo. No-op if `id` has no registered body.
+ */
+export function setBodyRotation(id: string, rotation: [number, number, number]): void {
+  const body = bodies.get(id);
+  if (!body) return;
+  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(rotation[0], rotation[1], rotation[2]));
+  body.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true);
 }
 
 /** Current world translation of object `id`'s rigid body, or null if not registered. */
