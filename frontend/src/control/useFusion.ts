@@ -98,7 +98,6 @@ export function useFusion(): FusionFrame {
   // position/force down to <HandCursor> as props; acceptable cost for one small mesh.
   const [frame, setFrame] = useState<FusionFrame>({ position: [0, 0, 0], force: 0, mode: "select", hasHit: false });
   const heldId = useRef<string | null>(null);
-  const lastHandWorldPos = useRef(new THREE.Vector3());
   const lastSculptTime = useRef(0);
   const holdStartPos = useRef<THREE.Vector3 | null>(null);
   const holdStartTime = useRef(0);
