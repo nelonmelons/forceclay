@@ -30,6 +30,12 @@ export const useEditor = create<EditorStore>()(
   immer((set, get) => ({
     objects: [],
     selectedId: null,
+    interactionMode: "select",
+
+    setInteractionMode: (m) =>
+      set((state) => {
+        state.interactionMode = m;
+      }),
 
     addObject: (partial) => {
       const id = crypto.randomUUID();

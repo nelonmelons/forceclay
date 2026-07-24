@@ -1,10 +1,13 @@
 import Viewport from "./scene/Viewport";
 import FusionLayer from "./scene/FusionLayer";
 import SpawnHandler, { SPAWN_EVENT } from "./scene/SpawnHandler";
+import TransformGizmo from "./scene/TransformGizmo";
+import VertexEditHandles from "./scene/VertexEditHandles";
 import { VideoStreamProvider } from "./providers/VideoStream";
 import { VisionSocketProvider } from "./providers/VisionSocket";
 import { EmgSocketProvider } from "./providers/EmgSocket";
 import ForceHUD from "./ui/ForceHUD";
+import Toolbar from "./ui/Toolbar";
 import CalibrationPanel from "./ui/CalibrationPanel";
 import ConnectionStatus from "./ui/ConnectionStatus";
 import CameraPip from "./ui/CameraPip";
@@ -27,10 +30,13 @@ function App() {
           <Viewport>
             <FusionLayer />
             <SpawnHandler />
+            <TransformGizmo />
+            <VertexEditHandles />
           </Viewport>
           <HandOverlay />
           <CameraPip />
           <ForceHUD />
+          <Toolbar />
           <CalibrationPanel />
           <ConnectionStatus />
           <button

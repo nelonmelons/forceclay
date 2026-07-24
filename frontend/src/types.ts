@@ -15,10 +15,19 @@ export interface HandState {
   depthProxy: number;
   isPinching: boolean;
   isOpen: boolean;
+  /** Hand roll angle (radians) from wrist->middle-MCP, for twist-to-rotate while carrying. */
+  handAngle: number;
 }
 
 /** Supported primitive/geometry kinds a `SceneObject` may hold. */
 export type GeometryKind = "box" | "sphere" | "cylinder" | "cone" | "torus" | "plane" | "custom";
+
+/**
+ * The single source of truth for what user interaction currently does to the scene.
+ * @remarks All input consumers (fusion loop, gizmo, vertex handles, delete-hover) branch off
+ * this one value — there is no separate "transformMode"/"editorMode" concept.
+ */
+export type InteractionMode = "select" | "move" | "rotate" | "scale" | "edit" | "warp" | "physics" | "delete";
 
 /** Flat, JSON-serializable mesh buffers used for deformed ("custom") clay geometry. */
 export interface SerializableGeometry {
@@ -51,6 +60,9 @@ export interface SceneObject {
 export interface EditorStore {
   objects: SceneObject[];
   selectedId: string | null;
+  /** The current global interaction mode; see `InteractionMode`. Defaults to "select". */
+  interactionMode: InteractionMode;
+  setInteractionMode(m: InteractionMode): void;
   /** Adds a new object to the scene and returns its generated id. */
   addObject(partial: Partial<SceneObject> & { geometry: GeometryKind }): string;
   select(id: string | null): void;

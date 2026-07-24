@@ -3,6 +3,7 @@
  * (Task C).
  */
 import { useMemo, type Ref } from "react";
+import type { ThreeEvent } from "@react-three/fiber";
 import * as THREE from "three";
 import type { SceneObject } from "../types";
 
@@ -52,6 +53,10 @@ export interface ClayMeshProps {
   object: SceneObject;
   /** Forwarded to the underlying `<mesh>` so callers (e.g. `PhysicsWorld`) can register it. */
   meshRef?: Ref<THREE.Mesh>;
+  /** When true, overrides the material with a red emissive tint (delete-mode hover). */
+  deleteHighlight?: boolean;
+  /** Forwarded to the underlying `<mesh>` for click-to-select/delete. */
+  onClick?: (e: ThreeEvent<MouseEvent>) => void;
 }
 
 /**
@@ -61,7 +66,7 @@ export interface ClayMeshProps {
  * sculpted custom geometry and the emissive heat-glow render identically in both paths, and
  * `useFusion`'s raycast can resolve `mesh.userData.objectId` regardless of which owns it.
  */
-export function ClayMesh({ object, meshRef }: ClayMeshProps) {
+export function ClayMesh({ object, meshRef, deleteHighlight, onClick }: ClayMeshProps) {
   // Custom geometry is rebuilt whenever its buffers change (sculpt edits); primitives rebuild on param change.
   const geometry = useMemo(() => buildGeometry(object), [
     object.geometry,
@@ -77,13 +82,14 @@ export function ClayMesh({ object, meshRef }: ClayMeshProps) {
       castShadow
       receiveShadow
       userData={{ objectId: object.id }}
+      onClick={onClick}
     >
       <meshStandardMaterial
         color={object.material.color}
         metalness={object.material.metalness}
         roughness={object.material.roughness}
-        emissive={object.material.emissive}
-        emissiveIntensity={object.material.emissiveIntensity}
+        emissive={deleteHighlight ? "#ff1a1a" : object.material.emissive}
+        emissiveIntensity={deleteHighlight ? 0.85 : object.material.emissiveIntensity}
       />
     </mesh>
   );

@@ -1,5 +1,5 @@
 /**
- * On-screen force meter + current fusion mode overlay (Task F).
+ * On-screen force meter + current interaction-mode overlay (Task F).
  * @remarks Reads `useFusionStatus` (written every frame by `useFusion`, inside the Canvas)
  * so this plain DOM overlay can live *outside* the Canvas without prop drilling. Designed to
  * be legible from a few feet away for a stage demo.
@@ -7,26 +7,33 @@
 import { useFusionStatus } from "../control/useFusion";
 
 const MODE_LABEL: Record<string, string> = {
-  sculpt: "SCULPT",
-  grab: "GRAB",
-  smooth: "SMOOTH",
-  spawn: "SPAWN",
-  idle: "IDLE",
+  select: "SELECT",
+  move: "MOVE",
+  rotate: "ROTATE",
+  scale: "SCALE",
+  edit: "EDIT",
+  warp: "WARP",
+  physics: "PHYSICS",
+  delete: "DELETE",
 };
 
 const MODE_COLOR: Record<string, string> = {
-  sculpt: "#ff5a1f",
-  grab: "#facc15",
-  smooth: "#38bdf8",
-  spawn: "#a78bfa",
-  idle: "#6b7280",
+  select: "#38bdf8",
+  move: "#a78bfa",
+  rotate: "#a78bfa",
+  scale: "#a78bfa",
+  edit: "#facc15",
+  warp: "#ff5a1f",
+  physics: "#4ade80",
+  delete: "#f87171",
 };
 
-/** Fixed-position force meter + mode/calibration readout for a stage demo. */
+/** Fixed-position force meter + mode/calibration/hit-target-held readout for a stage demo. */
 export default function ForceHUD() {
-  const { mode, force, calibrated, connectionStatus } = useFusionStatus();
+  const { interactionMode, force, calibrated, connectionStatus, hasHit, hoveredObjectId, heldObjectId, pinProgress, pinningId } =
+    useFusionStatus();
   const pct = Math.round(Math.min(1, Math.max(0, force)) * 100);
-  const modeColor = MODE_COLOR[mode] ?? "#6b7280";
+  const modeColor = MODE_COLOR[interactionMode] ?? "#6b7280";
 
   return (
     <div
@@ -55,7 +62,7 @@ export default function ForceHUD() {
             textShadow: `0 0 8px ${modeColor}`,
           }}
         >
-          {MODE_LABEL[mode] ?? mode.toUpperCase()}
+          {MODE_LABEL[interactionMode] ?? interactionMode.toUpperCase()}
         </span>
         <span style={{ fontSize: 11, opacity: 0.7 }}>
           {connectionStatus === "connected" ? "EMG linked" : connectionStatus}
@@ -86,6 +93,14 @@ export default function ForceHUD() {
         <span style={{ color: calibrated ? "#4ade80" : "#f87171" }}>
           {calibrated ? "calibrated" : "not calibrated"}
         </span>
+      </div>
+      <div style={{ marginTop: 8, fontSize: 11, opacity: 0.7, lineHeight: 1.5 }}>
+        <div>
+          hit: {hasHit ? "yes" : "no"} · target: {hoveredObjectId ?? "-"} · held: {heldObjectId ?? "-"}
+        </div>
+        {pinningId && (
+          <div style={{ color: "#4ade80" }}>Pinning… {Math.round(pinProgress * 100)}%</div>
+        )}
       </div>
     </div>
   );

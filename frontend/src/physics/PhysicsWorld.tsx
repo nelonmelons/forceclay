@@ -15,6 +15,7 @@ import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import * as THREE from "three";
 import { useEditor } from "../store/editor";
+import { useFusionStatus } from "../control/fusionStatus";
 import { ClayMesh } from "../scene/ClayObject";
 import type { SceneObject } from "../types";
 
@@ -65,6 +66,11 @@ interface SceneBodyProps {
 function SceneBody({ object }: SceneBodyProps) {
   const bodyRef = useRef<RapierRigidBody>(null);
   const meshRef = useRef<THREE.Mesh>(null);
+  const select = useEditor((s) => s.select);
+  const deleteSelected = useEditor((s) => s.deleteSelected);
+  const interactionMode = useEditor((s) => s.interactionMode);
+  const hoveredObjectId = useFusionStatus((s) => s.hoveredObjectId);
+  const deleteHighlight = interactionMode === "delete" && hoveredObjectId === object.id;
 
   useEffect(() => {
     registerBody(object.id, bodyRef.current);
@@ -88,7 +94,16 @@ function SceneBody({ object }: SceneBodyProps) {
       restitution={0.5}
       friction={0.8}
     >
-      <ClayMesh object={object} meshRef={meshRef} />
+      <ClayMesh
+        object={object}
+        meshRef={meshRef}
+        deleteHighlight={deleteHighlight}
+        onClick={(e) => {
+          e.stopPropagation();
+          select(object.id);
+          if (interactionMode === "delete") deleteSelected();
+        }}
+      />
     </RigidBody>
   );
 }
@@ -206,9 +221,26 @@ export function squash(id: string, force: number): void {
 }
 
 /**
- * Ergonomic hook form of the module-level grab/release/squash API, for consumers (like
+ * Pins object `id` in place: sets its Rapier body to `Fixed` at its current transform, drops
+ * it from the grab-follow registry, and marks it `"fixed"` in the scene store.
+ * @remarks Used both by hold-to-pin (carrying an object still for ~1.5s) and by warp/gizmo/
+ * edit sessions that need an object to stop falling while being manipulated.
+ */
+export function pin(id: string): void {
+  grabPoints.delete(id);
+  const body = bodies.get(id);
+  if (body) body.setBodyType(RigidBodyType.Fixed, true);
+  try {
+    useEditor.getState().setPhysics(id, "fixed");
+  } catch {
+    // Store action not wired for this id yet (e.g. debug-only body) — ignore.
+  }
+}
+
+/**
+ * Ergonomic hook form of the module-level grab/release/squash/pin API, for consumers (like
  * `useFusion`) that prefer hook-style access over importing the functions directly.
  */
 export function usePhysicsControls() {
-  return { grab, release, squash };
+  return { grab, release, squash, pin };
 }

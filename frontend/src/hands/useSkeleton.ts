@@ -38,6 +38,7 @@ export function useSkeleton(hands: VisionHand[] | undefined): HandState {
       depthProxy: 0,
       isPinching: false,
       isOpen: false,
+      handAngle: 0,
     };
   }
 
@@ -81,6 +82,13 @@ export function useSkeleton(hands: VisionHand[] | undefined): HandState {
     fingertips.reduce((s, p) => s + Math.hypot(p[0] - centroid[0], p[1] - centroid[1]), 0) / fingertips.length;
   const isOpen = avgTipSpread > 0.45 * spread;
 
+  // Roll angle from wrist (0) -> middle-finger MCP (9): stays informative even while pinching
+  // (unlike thumb<->index, which collapses together during a pinch). Y is negated so the
+  // angle follows the conventional screen-space CCW-positive-up convention.
+  const wrist = hand.landmarks[0];
+  const middleMcp = hand.landmarks[9];
+  const handAngle = Math.atan2(-(middleMcp[1] - wrist[1]), middleMcp[0] - wrist[0]);
+
   return {
     present: true,
     cursorPx,
@@ -91,5 +99,6 @@ export function useSkeleton(hands: VisionHand[] | undefined): HandState {
     depthProxy,
     isPinching,
     isOpen,
+    handAngle,
   };
 }

@@ -8,5 +8,5 @@ import HandCursor from "./HandCursor";
 
 export default function FusionLayer() {
   const frame = useFusion();
-  return <HandCursor position={frame.position} force={frame.force} />;
+  return <HandCursor position={frame.position} force={frame.force} mode={frame.mode} />;
 }

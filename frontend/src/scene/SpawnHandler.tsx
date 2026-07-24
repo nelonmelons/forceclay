@@ -1,10 +1,12 @@
 /**
- * Spawns a new sculptable clay sphere in front of the camera on the `S` key (or a
- * `"forceclay:spawn"` window event, for a DOM button outside the Canvas) and selects it.
+ * Spawns a new sculptable clay sphere above the floor on the `S` key (or a
+ * `"forceclay:spawn"` window event, for a DOM button outside the Canvas), drops it in under
+ * gravity, and selects it.
  * @remarks Must run inside `<Canvas>` (needs `useThree` for the camera). Uses
  * `makeClaySphere(radius, 14)` per the spec's clay-density requirement — `detail` maps to
  * `IcosahedronGeometry` subdivision, and 14 is the resolution sculpting needs (~2.3k verts);
- * detail 4 would be far too coarse to mold.
+ * detail 4 would be far too coarse to mold. Spawned `"dynamic"` (not `"fixed"`) so the new
+ * redesign's default-physics behavior is visible immediately.
  */
 import { useEffect } from "react";
 import { useThree } from "@react-three/fiber";
@@ -13,6 +15,7 @@ import { useEditor } from "../store/editor";
 import { makeClaySphere } from "../sculpt/geometry";
 
 const SPAWN_DISTANCE = 3;
+const SPAWN_HEIGHT = 2.5;
 const SPAWN_RADIUS = 0.6;
 const SPAWN_DETAIL = 14;
 export const SPAWN_EVENT = "forceclay:spawn";
@@ -30,8 +33,8 @@ export default function SpawnHandler() {
       const id = addObject({
         geometry: "custom",
         customGeometry: makeClaySphere(SPAWN_RADIUS, SPAWN_DETAIL),
-        physics: "fixed",
-        position: [pos.x, pos.y, pos.z],
+        physics: "dynamic",
+        position: [pos.x, SPAWN_HEIGHT, pos.z],
       });
       select(id);
     };
