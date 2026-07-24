@@ -60,10 +60,12 @@ const PIN_RADIUS = 0.15;
 const PIN_DURATION = 1.5;
 /** Smoothing for the carried object's position (ShapeShift lerps ~0.1; lower = smoother/laggier). */
 const CARRY_LERP = 0.2;
-/** Hand-size depth → push/pull sensitivity along the view ray while carrying. */
-const DEPTH_SENS = 4;
 /** Per-frame carry delta → release/throw velocity (units/sec). */
 const THROW_GAIN = 40;
+/** Screen-space (NDC) radius within which an object counts as hovered/grabbable when the ray
+ *  doesn't land a direct hit — mirrors ShapeShift's `pointer.distanceTo(pos2D) < TOLERANCE`
+ *  proximity highlight. Generous so a noisy hand cursor can still target a small object. */
+const PROXIMITY_NDC = 0.28;
 /** Sculpt writes are throttled to roughly this many Hz to keep BVH rebuilds affordable. */
 const SCULPT_HZ = 30;
 /** Warm emissive color clay ramps toward as sculpt force rises. */
@@ -102,7 +104,6 @@ export function useFusion(): FusionFrame {
   /** ShapeShift-style carry state: camera-facing drag plane, grab offset, and smoothed carry point. */
   const dragPlane = useRef(new THREE.Plane());
   const dragOffset = useRef(new THREE.Vector3());
-  const initialHandDepth = useRef(0);
   const carryPos = useRef(new THREE.Vector3());
   const lastCarryPos = useRef(new THREE.Vector3());
   /** Previous-frame cursor positions (px) for each holding hand, and previous inter-hand
@@ -143,21 +144,25 @@ export function useFusion(): FusionFrame {
     // holding (thumb-index pinch, stable ~50ms) orbits the camera; both hands holding pans
     // (from the left hand's delta) and dollies (from the change in inter-hand distance).
     // Mirrors ShapeShift's HolohandsOverlay per-frame wiring exactly.
-    const leftHold = hands.left?.isHolding ?? false;
-    const rightHold = hands.right?.isHolding ?? false;
+    // A grab cluster (isPinching, all 5 fingertips) also satisfies isHolding (thumb-index), so
+    // exclude pinching hands from camera-nav — otherwise picking an object up also rotates the
+    // camera. Small per-frame deltas are deadzoned so hand jitter can't drift/zoom "for no reason".
+    const leftHold = (hands.left?.isHolding ?? false) && !(hands.left?.isPinching ?? false);
+    const rightHold = (hands.right?.isHolding ?? false) && !(hands.right?.isPinching ?? false);
+    const NAV_DEADZONE = 0.006;
     if (leftHold && rightHold && hands.left && hands.right) {
       const L = hands.left.cursorPx;
       const R = hands.right.cursorPx;
       const prevL = prevLeftCursor.current;
       const dxN = (L.x - (prevL?.x ?? L.x)) / FRAME_WIDTH;
       const dyN = (L.y - (prevL?.y ?? L.y)) / FRAME_HEIGHT;
-      orbitPan(dxN, dyN);
+      if (Math.abs(dxN) > NAV_DEADZONE || Math.abs(dyN) > NAV_DEADZONE) orbitPan(dxN, dyN);
       prevLeftCursor.current = { x: L.x, y: L.y };
 
       const currDist = Math.hypot(R.x - L.x, R.y - L.y);
       if (prevHandDist.current != null) {
         const deltaZoom = (prevHandDist.current - currDist) / FRAME_WIDTH;
-        orbitDolly(deltaZoom);
+        if (Math.abs(deltaZoom) > NAV_DEADZONE) orbitDolly(deltaZoom);
       }
       prevHandDist.current = currDist;
       prevRightCursor.current = { x: R.x, y: R.y };
@@ -166,7 +171,7 @@ export function useFusion(): FusionFrame {
       const prev = rightHold ? prevRightCursor.current : prevLeftCursor.current;
       const dxN = (H.cursorPx.x - (prev?.x ?? H.cursorPx.x)) / FRAME_WIDTH;
       const dyN = (H.cursorPx.y - (prev?.y ?? H.cursorPx.y)) / FRAME_HEIGHT;
-      orbitRotate(dxN, dyN);
+      if (Math.abs(dxN) > NAV_DEADZONE || Math.abs(dyN) > NAV_DEADZONE) orbitRotate(dxN, dyN);
       if (rightHold) prevRightCursor.current = { x: H.cursorPx.x, y: H.cursorPx.y };
       else prevLeftCursor.current = { x: H.cursorPx.x, y: H.cursorPx.y };
       prevHandDist.current = null;
@@ -199,9 +204,28 @@ export function useFusion(): FusionFrame {
       }
     }
 
-    // Approximate the hand's world position as the ray hit (fallback: a point in front of camera).
-    const handWorldPos = hitWorld ?? camera.position.clone().add(new THREE.Vector3(0, 0, -2));
-    const hoveredObjectId = hasHit ? hitObjectId : null;
+    // Forgiving hover/grab target: exact ray hit if any, else the object whose screen-projected
+    // center is nearest the hand cursor within PROXIMITY_NDC (ShapeShift's NDC-distance highlight).
+    let targetId: string | null = hitObjectId;
+    let targetWorld: THREE.Vector3 | null = hitWorld ? hitWorld.clone() : null;
+    if (!targetId && hand) {
+      let best = PROXIMITY_NDC;
+      for (const o of editor.objects) {
+        if (!o.visible) continue;
+        const bp = getBodyPosition(o.id);
+        const center = bp
+          ? new THREE.Vector3(bp[0], bp[1], bp[2])
+          : new THREE.Vector3(o.position[0], o.position[1], o.position[2]);
+        const ndc = center.clone().project(camera);
+        const d = Math.hypot(ndc.x - hand.cursorNdc.x, ndc.y - hand.cursorNdc.y);
+        if (d < best) {
+          best = d;
+          targetId = o.id;
+          targetWorld = center;
+        }
+      }
+    }
+    const hoveredObjectId = targetId;
     let pinProgress = 0;
     let pinningId: string | null = null;
 
@@ -245,9 +269,8 @@ export function useFusion(): FusionFrame {
       // hand cursor doesn't jitter the object. No raw ray-hit-follow (that fed back on itself).
       try {
         if (!heldId.current) {
-          if (hasHit && hitObjectId && hand && hand.isPinching) {
-            const bp = getBodyPosition(hitObjectId);
-            const objWorld = bp ? new THREE.Vector3(bp[0], bp[1], bp[2]) : (hitWorld ?? handWorldPos).clone();
+          if (targetId && targetWorld && hand && hand.isPinching) {
+            const objWorld = targetWorld.clone();
             const camForward = camera.getWorldDirection(new THREE.Vector3());
             dragPlane.current.setFromNormalAndCoplanarPoint(camForward, objWorld);
             raycaster.setFromCamera(new THREE.Vector2(hand.cursorNdc.x, hand.cursorNdc.y), camera);
@@ -257,11 +280,10 @@ export function useFusion(): FusionFrame {
             } else {
               dragOffset.current.set(0, 0, 0);
             }
-            initialHandDepth.current = hand.depthProxy;
             carryPos.current.copy(objWorld);
             lastCarryPos.current.copy(objWorld);
-            grab(hitObjectId, [objWorld.x, objWorld.y, objWorld.z]);
-            heldId.current = hitObjectId;
+            grab(targetId, [objWorld.x, objWorld.y, objWorld.z]);
+            heldId.current = targetId;
             holdStartPos.current = null;
           }
         } else {
@@ -275,11 +297,12 @@ export function useFusion(): FusionFrame {
             // Follow the drag plane, smoothed. lastCarryPos is captured before the lerp so the
             // per-frame delta doubles as throw velocity on release.
             raycaster.setFromCamera(new THREE.Vector2(hand.cursorNdc.x, hand.cursorNdc.y), camera);
+            // Carry on the fixed camera-facing drag plane only. (No hand-depth push/pull: the
+            // hand-size depth proxy is too noisy and made held objects drift toward the camera —
+            // "enlarge" — on their own. The plane keeps a stable grab depth.)
             const target = new THREE.Vector3();
             if (raycaster.ray.intersectPlane(dragPlane.current, target)) {
               target.add(dragOffset.current);
-              const deltaDepth = initialHandDepth.current - hand.depthProxy;
-              target.add(raycaster.ray.direction.clone().multiplyScalar(deltaDepth * DEPTH_SENS));
               lastCarryPos.current.copy(carryPos.current);
               carryPos.current.lerp(target, CARRY_LERP);
               grab(held, [carryPos.current.x, carryPos.current.y, carryPos.current.z]);

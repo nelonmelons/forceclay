@@ -86,11 +86,18 @@ export function ClayMesh({ object, meshRef, deleteHighlight, onClick }: ClayMesh
   const isSelected = useEditor((s) => s.selectedId === object.id);
   const interactionMode = useEditor((s) => s.interactionMode);
   const hoveredObjectId = useFusionStatus((s) => s.hoveredObjectId);
+  const heldObjectId = useFusionStatus((s) => s.heldObjectId);
+  const isGrabbed = heldObjectId === object.id;
   const isGoldHover =
     !deleteHighlight &&
+    !isGrabbed &&
     !isSelected &&
     hoveredObjectId === object.id &&
     GRAB_CAPABLE_MODES.includes(interactionMode);
+
+  // Priority: delete (red) > grabbed (cyan, lit while carried) > object's own emissive.
+  const emissiveColor = deleteHighlight ? "#ff1a1a" : isGrabbed ? "#22e0ff" : object.material.emissive;
+  const emissiveIntensity = deleteHighlight ? 0.85 : isGrabbed ? 0.9 : object.material.emissiveIntensity;
 
   return (
     <mesh
@@ -106,11 +113,12 @@ export function ClayMesh({ object, meshRef, deleteHighlight, onClick }: ClayMesh
         color={object.material.color}
         metalness={object.material.metalness}
         roughness={object.material.roughness}
-        emissive={deleteHighlight ? "#ff1a1a" : object.material.emissive}
-        emissiveIntensity={deleteHighlight ? 0.85 : object.material.emissiveIntensity}
+        emissive={emissiveColor}
+        emissiveIntensity={emissiveIntensity}
       />
-      {isSelected && <Edges color="#4dabf7" />}
+      {isSelected && !isGrabbed && <Edges color="#4dabf7" />}
       {isGoldHover && <Edges color="#ffcc33" />}
+      {isGrabbed && <Edges color="#22e0ff" />}
     </mesh>
   );
 }
