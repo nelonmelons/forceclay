@@ -1,0 +1,7 @@
+mediapipe==0.10.21
+opencv-contrib-python
+numpy
+eventlet
+flask
+flask-cors
+orjson
