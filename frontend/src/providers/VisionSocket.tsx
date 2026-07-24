@@ -63,9 +63,19 @@ export function VisionSocketProvider({ children }: { children: ReactNode }) {
       statusRef.current = "connecting";
 
       ws.onopen = () => {
+        // Re-assert this socket as current: a StrictMode double-mount can leave a stale
+        // socket's onclose about to fire, so we must own wsRef here, not just at creation.
+        if (cancelled) {
+          ws.close();
+          return;
+        }
+        wsRef.current = ws;
         statusRef.current = "connected";
       };
       ws.onclose = () => {
+        // Ignore if a newer socket already superseded this one — otherwise a stale socket's
+        // late onclose nulls out the live wsRef while status still reads "connected" (→ 0 frames).
+        if (wsRef.current !== ws) return;
         statusRef.current = "disconnected";
         wsRef.current = null;
         if (!cancelled && reconnectTimerRef.current === null) {
