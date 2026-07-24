@@ -8,9 +8,29 @@ import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import type { EditorStore, SceneObject } from "../types";
 
-/** Clay-ish default material for newly spawned objects. */
+/**
+ * Pastel fill palette for the light "playground" theme — cycled (not random) so consecutively
+ * spawned objects are visibly distinct from their immediate neighbors.
+ */
+const PASTEL_PALETTE = [
+  "#f4a6a0", // coral
+  "#f7cf8a", // apricot
+  "#f6e39a", // butter
+  "#a8d8b9", // mint
+  "#9fd3d9", // seafoam
+  "#a9c6e8", // sky
+  "#c3b3e0", // lavender
+  "#f0b3d0", // bubblegum
+];
+
+/** Index into `PASTEL_PALETTE` for the next spawned object; advances on every `addObject` call. */
+let nextPaletteIndex = 0;
+
+/** Clay-ish default material for newly spawned objects: a matte pastel cycled from `PASTEL_PALETTE`. */
 function defaultMaterial() {
-  return { color: "#c9986b", metalness: 0.05, roughness: 0.85, emissive: "#000000", emissiveIntensity: 0 };
+  const color = PASTEL_PALETTE[nextPaletteIndex % PASTEL_PALETTE.length];
+  nextPaletteIndex += 1;
+  return { color, metalness: 0.05, roughness: 0.85, emissive: "#000000", emissiveIntensity: 0 };
 }
 
 interface Snapshot {
