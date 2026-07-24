@@ -15,6 +15,10 @@ import { CRACK_FORCE, FRAGILE_PREFIX, makeShard } from "./fragileGeometry";
 
 /** Shards produced when something cracks. */
 const SHARDS = 9;
+/** Grace period after pickup before a squeeze can break anything. */
+const SETTLE_MS = 350;
+/** Extra clench above the pickup force required to crack. */
+const SQUEEZE_MARGIN = 0.12;
 /** How far shards are flung from the break point (world units). */
 const SCATTER = 0.28;
 
@@ -23,14 +27,31 @@ export default function FragileWatcher() {
   const emg = useEmgSocket();
   /** Guards against breaking the same object twice while force stays above the threshold. */
   const broken = useRef<Set<string>>(new Set());
+  /** Force sampled when the current object was first picked up. */
+  const grabForce = useRef<number | null>(null);
+  const grabbedId = useRef<string | null>(null);
+  const heldSince = useRef(0);
 
   useEffect(() => {
     const id = setInterval(() => {
       const force = emg.getData()?.force ?? 0;
-      if (force < CRACK_FORCE) return;
-
       const heldId = useFusionStatus.getState().heldObjectId;
+
+      // Track pickup: remember the force it took to grab, and when.
+      if (heldId !== grabbedId.current) {
+        grabbedId.current = heldId;
+        grabForce.current = heldId ? force : null;
+        heldSince.current = heldId ? Date.now() : 0;
+        return;
+      }
       if (!heldId || broken.current.has(heldId)) return;
+
+      // Cracking needs a deliberate EXTRA squeeze, not the force that picked it up. Comparing
+      // against an absolute threshold broke the egg the instant it was grabbed, because the
+      // grab force already exceeded it -- so it could never be held at all.
+      if (Date.now() - heldSince.current < SETTLE_MS) return;
+      const base = grabForce.current ?? 0;
+      if (force < CRACK_FORCE || force < base + SQUEEZE_MARGIN) return;
 
       const store = useEditor.getState();
       const obj = store.objects.find((o) => o.id === heldId);
