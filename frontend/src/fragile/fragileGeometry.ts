@@ -114,4 +114,4 @@ export function makeShard(size = 0.16, seed = 0): SerializableGeometry {
 /** Names that mark an object as breakable, and the force fraction that cracks it. */
 export const FRAGILE_PREFIX = "fragile:";
 /** Clench fraction above which a held fragile object breaks. */
-export const CRACK_FORCE = 0.5;
+export const CRACK_FORCE = 0.3;

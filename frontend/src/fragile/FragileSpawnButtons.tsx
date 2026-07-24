@@ -8,7 +8,7 @@ import { useEditor } from "../store/editor";
 import { FRAGILE_PREFIX, makeEgg, makeWillow } from "./fragileGeometry";
 
 const PANEL: React.CSSProperties = {
-  position: "fixed", bottom: 16, left: 16, zIndex: 20,
+  position: "fixed", top: 168, right: 16, zIndex: 20,
   padding: "12px 14px", borderRadius: 12, minWidth: 210,
   background: "rgba(15,15,20,0.72)", color: "#fff",
   fontFamily: "system-ui, sans-serif", backdropFilter: "blur(6px)",
