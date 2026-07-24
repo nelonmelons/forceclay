@@ -95,117 +95,126 @@ class MockEmgSource:
 
 
 class RealEmgSource:
-    """Cyton envelope source: stateful causal SOS filter -> per-channel RMS -> weighted axis.
+    """Cyton envelope source, built on obci.bridge + a stateful causal SOS filter.
 
-    Three changes from the first implementation, each measured on a real 60 s
-    labelled session (rest / clench / point, left forearm, bipolar pairs):
+    Backed by the same `obci` package the calibration and recording tools in
+    emg/tools/ use, so there is exactly one board-handling and one DSP
+    implementation rather than two that can drift apart.
 
-    1. CYTON, NOT CYTON+DAISY. Daisy multiplexes two ADS1299 chips, so 16 channels
-       land at 125 Hz per channel instead of 250. That matters more than it looks:
-       the ADS1299's sinc^3 decimation filter is -3 dB at 0.262 * f_DATA, i.e. 33 Hz
-       at 125 Hz vs 66 Hz at 250 Hz -- and sEMG median frequency is 50-100 Hz. At
-       125 Hz the front end attenuates the middle of our own signal. Force is a
-       single envelope, so the extra channels buy nothing that the lost bandwidth
-       does not cost. Pass --board cyton_daisy to go back.
+    Four things this gets right that a bare BrainFlow loop does not, each measured
+    on a 60 s labelled session (rest / clench / point, left forearm, bipolar pairs):
 
-    2. STATEFUL CAUSAL FILTER. DataFilter.perform_bandpass/bandstop filter each
-       get_board_data() chunk in isolation with no state carried between calls. At a
-       40 Hz tick that chunk is ~3-6 samples, and a 4th-order Butterworth over 3
-       samples is essentially all startup transient -- the filter never converges,
-       so the "envelope" was largely filter ringing. Here one cascaded SOS (60/120 Hz
-       notch + band-pass) carries its `zi` state across chunks, so every sample is
-       filtered with real history. Zero added latency; phase distortion is
-       irrelevant underneath an RMS envelope.
+    1. BIPOLAR CHANNEL CONFIG. The Cyton firmware boots with SRB2 ON, which
+       references every channel to the shared SRB2 rail. On a bipolar montage
+       (two electrodes per channel into one Nxp column) that rail is unwired and
+       floating, and every connected channel reads ~100% 60 Hz hum. CytonBridge
+       .configure_channels() sends the per-channel `x..` commands that switch to
+       true INxP-vs-INxN and power down unused channels so their electrodes stay
+       out of the BIAS loop. Skipping this step is the difference between signal
+       and mains.
 
-    3. WEIGHTED AXIS, NOT A PLAIN MEAN. aggregate = mean(channels) lets the worst
-       electrode dominate: a pad with poor skin contact carried 82 uV RMS of pure
-       60 Hz, the same magnitude as a real contraction. Fisher separability for
-       rest vs clench, same recording: 0.09 for the unweighted sum of three
-       channels, 0.44 for the best single channel, 1.43 for an LDA-weighted sum of
-       log-envelopes. The default weights below are that LDA fit. Averaging is a
-       16x regression against weighting, so the mean is not a safe default.
+    2. STATEFUL CAUSAL FILTER. One cascaded SOS (60/120 Hz notch + band-pass)
+       carries its `zi` state across chunks. Filtering each get_board_data() chunk
+       in isolation -- which is what DataFilter.perform_bandpass does -- means a
+       4th-order Butterworth over the ~3-6 samples a 40 Hz tick delivers, i.e.
+       essentially all startup transient and no convergence. Zero added latency,
+       and phase distortion is irrelevant under an RMS envelope.
+
+    3. WEIGHTED AXIS, NOT A MEAN. mean(channels) lets the worst electrode dominate:
+       a pad with poor contact carried 82 uV RMS of pure 60 Hz, the same magnitude
+       as a real contraction. Fisher separability rest vs clench: 0.09 unweighted
+       sum of three channels, 0.44 best single channel, 1.43 LDA-weighted sum of
+       log-envelopes. Refit for your own placement with tools/fit_weights.py.
+
+    4. CYTON, NOT CYTON+DAISY. Daisy interleaves two ADS1299 chips, so 16 channels
+       land at 125 Hz each instead of 250. The ADS1299 sinc^3 decimation filter is
+       -3 dB at 0.262 * f_DATA -- 33 Hz at 125 Hz vs 66 Hz at 250 Hz -- and sEMG
+       median frequency is 50-100 Hz, so Daisy attenuates the middle of the signal.
+       Force is one envelope, so extra channels buy nothing the bandwidth costs.
+       NOTE: a Daisy may be physically attached and idle; BrainFlow's CYTON_BOARD
+       mode still streams 8 channels at a measured 247.9 Hz.
 
     Emits the same (raw_aggregate, raw_per_channel) shape as MockEmgSource, so
     calibration.py normalizes it unchanged and the WS contract is untouched.
-
-    @remarks brainflow is imported inside __init__, never at module top level, so
-    `--mock` still runs without it.
     """
 
-    # LDA on log-envelopes, fitted on session_20260724_152341 (ch1 FDS flexors,
-    # ch2 EDC extensors, ch4 FCU). ch1 earns the largest weight despite being the
-    # weakest channel alone (Fisher 0.08); ch4 earns a NEGATIVE weight because it
-    # is ~0.98 correlated with ch1 and so acts as a common-mode reference.
+    # LDA on log-envelopes. ch1 = FDS finger flexors (volar), ch2 = EDC finger
+    # extensors (dorsal), ch4 = FCU. ch1 earns the largest weight despite being the
+    # weakest alone (Fisher 0.08); ch4 earns a NEGATIVE weight because it is ~0.98
+    # correlated with ch1 and so acts as a common-mode reference. Placement-specific
+    # -- refit with tools/fit_weights.py against your own labelled session.
     DEFAULT_WEIGHTS = {1: 0.515, 2: 0.345, 4: -0.140}
 
     def __init__(self, serial_port: str, board: str = "cyton",
                  channels: Optional[List[int]] = None,
                  weights: Optional[dict] = None,
-                 band: Tuple[float, float] = (20.0, 100.0)) -> None:
-        from brainflow.board_shim import BoardIds, BoardShim, BrainFlowInputParams
+                 band: Optional[Tuple[float, float]] = None) -> None:
+        import sys as _sys, pathlib as _pathlib
+        _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parent))
         from scipy.signal import butter, iirnotch, tf2sos
+        from obci import config as obci_config
+        from obci.bridge import CytonBridge
 
-        self._board_id = (BoardIds.CYTON_DAISY_BOARD.value if board == "cyton_daisy"
-                          else BoardIds.CYTON_BOARD.value)
-        params = BrainFlowInputParams()
-        params.serial_port = serial_port
-        self._board = BoardShim(self._board_id, params)
-        self._board.prepare_session()
-        self._board.start_stream()
+        sel = sorted(channels or self.DEFAULT_WEIGHTS)
+        self._bridge = CytonBridge(serial_port, board)
+        # active= puts these channels in bipolar mode and powers down the rest.
+        self._bridge.start_stream(active=sel)
+        self._sampling_rate = self._bridge.sampling_rate
+        exg = self._bridge.eeg_channels()
 
-        try:
-            exg = BoardShim.get_emg_channels(self._board_id)
-        except Exception:
-            exg = BoardShim.get_exg_channels(self._board_id)
-        self._sampling_rate = BoardShim.get_sampling_rate(self._board_id)
-
-        # 1-based channel selection -> board row indices.
-        sel = channels or sorted(self.DEFAULT_WEIGHTS)
-        sel = [c for c in sel if 1 <= c <= len(exg)] or list(range(1, len(exg) + 1))
+        sel = [c for c in sel if 1 <= c <= len(exg)] or [1]
         self._sel = sel
         self._rows = [exg[c - 1] for c in sel]
         self.num_channels = len(sel)
+        self._shim = self._bridge._shim
 
         w = dict(weights or self.DEFAULT_WEIGHTS)
         self._w = [w.get(c, 0.0) for c in sel]
-        if not any(self._w):                      # no weight covers the selection
+        if not any(self._w):
             self._w = [1.0 / len(sel)] * len(sel)
 
+        lo, hi = band or obci_config.EMG_BANDPASS_HZ
         nyq = self._sampling_rate / 2.0
-        secs = [tf2sos(*iirnotch(f0, 30.0, fs=self._sampling_rate))
-                for f0 in (60.0, 120.0) if f0 < nyq]
-        lo, hi = band[0], min(band[1], nyq * 0.99)
-        secs.append(butter(4, [lo / nyq, hi / nyq], btype="band", output="sos"))
+        hi = min(float(hi), nyq * 0.99)
+        secs = [tf2sos(*iirnotch(f0, obci_config.NOTCH_Q, fs=self._sampling_rate))
+                for f0 in (obci_config.NOTCH_FREQ_HZ, obci_config.NOTCH_FREQ_HZ * 2)
+                if f0 < nyq]
+        secs.append(butter(4, [float(lo) / nyq, hi / nyq], btype="band", output="sos"))
         self._sos = np.vstack(secs)
         self._zi = [np.zeros((self._sos.shape[0], 2)) for _ in sel]
 
-        # >=80 ms of moving RMS; shorter and the estimate is too few samples to sit still.
-        win_len = max(8, int(self._sampling_rate * 0.1))
+        win_len = max(8, int(self._sampling_rate * 0.1))   # >=80 ms of moving RMS
         self._rms_buffers = [deque([0.0] * win_len, maxlen=win_len) for _ in sel]
         self._ema = [0.0 for _ in sel]
         self._alpha = 0.25
 
-        print(f"[emg] {board} @ {self._sampling_rate} Hz  channels={sel}  "
+        print(f"[emg] {board} @ {self._sampling_rate} Hz  bipolar ch={sel}  "
               f"weights={[round(x, 3) for x in self._w]}  band={lo:g}-{hi:g} Hz", flush=True)
 
     def sample(self) -> Tuple[float, List[float]]:
         """Pull newly available board data and return (raw_aggregate, raw_per_channel)."""
         from scipy.signal import sosfilt
 
-        data = self._board.get_board_data()
-        if data.shape[1] > 0:
+        data = self._shim.get_board_data()
+        if getattr(data, "ndim", 0) == 2 and data.shape[1] > 0:
             for i, row in enumerate(self._rows):
-                sig = data[row].astype(np.float64)
-                y, self._zi[i] = sosfilt(self._sos, sig, zi=self._zi[i])
+                y, self._zi[i] = sosfilt(self._sos, data[row].astype(np.float64),
+                                         zi=self._zi[i])
                 self._rms_buffers[i].extend(y.tolist())
                 rms = float(np.sqrt(np.mean(np.square(self._rms_buffers[i]))))
                 self._ema[i] = self._alpha * rms + (1 - self._alpha) * self._ema[i]
 
         channels_env = list(self._ema)
-        # Weighted sum of LOG envelopes: EMG amplitude is roughly log-normal, and the
-        # LDA fit above was performed in log space, so the weights only apply there.
+        # Weighted sum of LOG envelopes -- EMG amplitude is roughly log-normal and
+        # the LDA fit was performed in log space, so the weights only apply there.
         aggregate = float(sum(w * np.log(e + 1e-6) for w, e in zip(self._w, channels_env)))
         return aggregate, channels_env
+
+    def close(self) -> None:
+        try:
+            self._bridge.release()
+        except Exception:
+            pass
 
 
 class EmgBackend:

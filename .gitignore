@@ -5,3 +5,10 @@ __pycache__/
 *.pyc
 .DS_Store
 .env
+
+# EMG recordings (biosignal data, regenerated per session)
+emg/recordings/*.parquet
+emg/recordings/*.csv
+emg/recordings/*.meta.json
+emg/recordings/*.npz
+emg/**/__pycache__/
