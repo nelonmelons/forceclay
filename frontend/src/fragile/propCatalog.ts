@@ -8,7 +8,7 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { SerializableGeometry } from "../types.ts";
-import { makeEgg, makeShell, makeShard, makeWillow, makeYolk, toSerializable } from "./fragileGeometry.ts";
+import { makeEgg, makeShell, makeYolk, toSerializable } from "./fragileGeometry.ts";
 
 export interface Mat {
   color: string; metalness: number; roughness: number; emissive: string; emissiveIntensity: number;
@@ -43,11 +43,6 @@ const CREAM: Mat = { color: "#f7efdd", metalness: 0.02, roughness: 0.55, emissiv
 const YOLK: Mat = { color: "#ffb300", metalness: 0, roughness: 0.25, emissive: "#c26a00", emissiveIntensity: 0.5 };
 const KETCHUP: Mat = { color: "#c1121f", metalness: 0, roughness: 0.3, emissive: "#5c0a10", emissiveIntensity: 0.35 };
 const GLASS: Mat = { color: "#d33", metalness: 0.1, roughness: 0.25, emissive: "#000000", emissiveIntensity: 0 };
-const RUBBER: Mat = { color: "#ff5aa8", metalness: 0, roughness: 0.4, emissive: "#000000", emissiveIntensity: 0 };
-const METAL: Mat = { color: "#9fb4c7", metalness: 0.8, roughness: 0.3, emissive: "#000000", emissiveIntensity: 0 };
-const FIZZ: Mat = { color: "#ffe9a8", metalness: 0, roughness: 0.1, emissive: "#8a6a00", emissiveIntensity: 0.4 };
-const PEEL: Mat = { color: "#ff8c1a", metalness: 0, roughness: 0.6, emissive: "#000000", emissiveIntensity: 0 };
-const JUICE: Mat = { color: "#ffc247", metalness: 0, roughness: 0.2, emissive: "#8a5a00", emissiveIntensity: 0.4 };
 
 /** A blob: small squashed sphere, used for liquids (ketchup, juice, fizz). */
 function blob(r: number): SerializableGeometry {
@@ -78,28 +73,7 @@ function bottle(): SerializableGeometry {
   return toSerializable(m);
 }
 
-/** Drinks can: a plain cylinder, tall and narrow. */
-function can(): SerializableGeometry {
-  const g = new THREE.CylinderGeometry(0.17, 0.17, 0.52, 16);
-  return toSerializable(g);
-}
 
-/** Balloon: a sphere pulled to a point at the knot. */
-function balloon(): SerializableGeometry {
-  const g = new THREE.SphereGeometry(0.3, 18, 14);
-  const pos = g.getAttribute("position") as THREE.BufferAttribute;
-  const v = new THREE.Vector3();
-  for (let i = 0; i < pos.count; i++) {
-    v.fromBufferAttribute(pos, i);
-    const t = (-v.y / 0.3 + 1) / 2;             // 1 at the bottom
-    const pinch = 1 - 0.78 * Math.pow(t, 3.2);
-    v.x *= pinch; v.z *= pinch;
-    v.y *= 1.18;
-    pos.setXYZ(i, v.x, v.y, v.z);
-  }
-  g.computeVertexNormals();
-  return toSerializable(g);
-}
 
 /** Radial spray of liquid blobs, angled upward and outward. */
 function spray(n: number, mat: Mat, r: number, speed: number, lift: number): Debris[] {
@@ -138,55 +112,6 @@ export const PROPS: PropSpec[] = [
     threshold: 0.3,
     survives: true,      // squeezing a bottle should not delete the bottle
     debris: () => spray(9, KETCHUP, 0.075, 2.6, 3.2),
-  },
-  {
-    key: "soda",
-    label: "Soda can",
-    geometry: can,
-    material: METAL,
-    threshold: 0.55,     // a can takes real force
-    survives: true,
-    debris: () => spray(12, FIZZ, 0.05, 1.9, 4.4),
-  },
-  {
-    key: "balloon",
-    label: "Balloon",
-    geometry: balloon,
-    material: RUBBER,
-    threshold: 0.2,      // pops easily
-    survives: false,
-    debris: () =>
-      Array.from({ length: 7 }, (_, i) => {
-        const a = (i / 7) * Math.PI * 2;
-        return {
-          geometry: makeShard(0.1, i),
-          material: RUBBER,
-          offset: [Math.cos(a) * 0.08, 0.05, Math.sin(a) * 0.08] as [number, number, number],
-          velocity: [Math.cos(a) * 4.2, 2.6, Math.sin(a) * 4.2] as [number, number, number],
-        };
-      }),
-  },
-  {
-    key: "orange",
-    label: "Orange",
-    geometry: () => makeEgg(0.3),   // near-spherical; the taper reads as a citrus dimple
-    material: PEEL,
-    threshold: 0.45,
-    survives: false,
-    debris: () => [
-      ...spray(6, JUICE, 0.06, 2.2, 2.8),
-      { geometry: makeShell(0.3, true), material: PEEL, offset: [0.08, 0.08, 0], velocity: [1.4, 1.2, 0.3] },
-      { geometry: makeShell(0.3, false), material: PEEL, offset: [-0.08, -0.04, 0], velocity: [-1.4, 0.8, -0.3] },
-    ],
-  },
-  {
-    key: "willow",
-    label: "One-wish willow",
-    geometry: () => makeWillow(0.62),
-    material: { color: "#cfe8c8", metalness: 0, roughness: 0.7, emissive: "#1a2a12", emissiveIntensity: 0.25 },
-    threshold: 0.35,
-    survives: false,
-    debris: () => spray(10, { ...FIZZ, color: "#f4ffe8" }, 0.04, 1.2, 3.6),
   },
 ];
 

@@ -29,8 +29,6 @@ const BURST_DELAY_MS = 60;
 const DEBRIS_TTL_MS = 5000;
 /** A surviving prop (bottle, can) can be squeezed again after this long. */
 const REARM_MS = 900;
-/** Strain glow starts at this fraction of the threshold. */
-const GLOW_START = 0.35;
 
 /** Mounted once, outside the Canvas. Renders nothing. */
 export default function FragileWatcher() {
@@ -59,15 +57,9 @@ export default function FragileWatcher() {
       const spec = findProp(obj.name.slice(FRAGILE_PREFIX.length));
       if (!spec) return;
 
-      // Strain glow: ramp emissive as the squeeze closes on THIS prop's threshold, so the burst is
-      // telegraphed instead of arriving out of nowhere.
-      const strain = Math.min(Math.max(force / spec.threshold, 0), 1);
-      store.updateMaterial(heldId, {
-        emissive: strain > GLOW_START ? "#ff3b1f" : spec.material.emissive,
-        emissiveIntensity:
-          strain > GLOW_START ? (strain - GLOW_START) * 2.4 : spec.material.emissiveIntensity,
-      });
-
+      // NO per-tick material writes. The strain glow called updateMaterial every 60ms, which
+      // mutates the store and forces every custom-geometry mesh to rebuild its BufferGeometry --
+      // that was the lag. Not worth it for a colour ramp.
       if (force < spec.threshold) return;
       const last = lastBurst.current.get(heldId) ?? 0;
       if (Date.now() - last < REARM_MS) return;
@@ -90,12 +82,6 @@ export default function FragileWatcher() {
         st.select(heldId);
         st.deleteSelected();
         st.select(null);
-      } else {
-        // A bottle keeps existing — settle it back to its own look instead of staying red-hot.
-        store.updateMaterial(heldId, {
-          emissive: spec.material.emissive,
-          emissiveIntensity: spec.material.emissiveIntensity,
-        });
       }
 
       const spawned: { id: string; velocity: [number, number, number] }[] = [];
