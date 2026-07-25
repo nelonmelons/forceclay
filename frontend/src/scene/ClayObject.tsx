@@ -4,6 +4,7 @@
  */
 import { useMemo, type Ref } from "react";
 import type { ThreeEvent } from "@react-three/fiber";
+import { Line } from "@react-three/drei";
 import * as THREE from "three";
 import { useEditor } from "../store/editor";
 import { useFusionStatus } from "../control/fusionStatus";
@@ -11,6 +12,12 @@ import type { InteractionMode, SceneObject } from "../types";
 
 /** Modes where a hand pinch can pick the object up — hover shows the gold "pinch to grab" cue. */
 const GRAB_CAPABLE_MODES: InteractionMode[] = ["select", "physics", "move", "rotate", "scale"];
+
+/** Near-black wireframe tint — deliberately NOT a darkened fill color, so edges stay crisp and
+ *  legible against every pastel/highlight color instead of blending into it. */
+const WIRE_COLOR = "#1c1c1c";
+/** Screen-space pixel width of the fat wireframe lines (see `Line`/`LineMaterial`). */
+const WIRE_LINE_WIDTH = 2.5;
 
 export interface ClayObjectProps {
   object: SceneObject;
@@ -72,9 +79,11 @@ export interface ClayMeshProps {
  * `useFusion`'s raycast can resolve `mesh.userData.objectId` regardless of which owns it.
  * Selection/hover/grab/delete states are surfaced by driving the mesh's own `emissive` (not a
  * drei `<Edges>` outline, which does not render in this project); priority is delete(red) >
- * grabbed(cyan) > hover(gold) > selected(blue) > the object's own emissive. A thin darker-tint
- * `WireframeGeometry` overlay (rendered as a non-raycasting `<lineSegments>` sibling) gives every
- * shape a subtle "lines/grid" edge on top of its pastel fill.
+ * grabbed(cyan) > hover(gold) > selected(blue) > the object's own emissive. A near-black, fat-line
+ * `WireframeGeometry` overlay (drei's `<Line segments>`/`LineMaterial`, rendered as a
+ * non-raycasting sibling) gives every shape a crisp, clearly-visible "lines/grid" edge on top of
+ * its pastel fill — a plain `lineBasicMaterial` can't render a screen-space pixel width in WebGL,
+ * hence the fat-line component instead of a bare `<lineSegments>`.
  */
 export function ClayMesh({ object, meshRef, deleteHighlight, onClick }: ClayMeshProps) {
   // Custom geometry is rebuilt whenever its buffers change (sculpt edits); primitives rebuild on param change.
@@ -116,17 +125,19 @@ export function ClayMesh({ object, meshRef, deleteHighlight, onClick }: ClayMesh
     emissiveIntensity = 0.75;
   }
 
-  // Thin wireframe/edge-line overlay for the "lines/grid" playground look. Built directly from
-  // the same geometry via THREE.WireframeGeometry (drei's <Edges> does not render in this
-  // project) and rendered as a sibling <lineSegments>, so it moves/scales in lockstep with the
-  // solid mesh with no extra transform bookkeeping.
+  // Edge-line overlay for the "lines/grid" playground look. Segment endpoints are built directly
+  // from the same geometry via THREE.WireframeGeometry (drei's <Edges> does not render in this
+  // project), then flattened into [x,y,z] triples for drei's <Line segments> fat-line component —
+  // a plain lineBasicMaterial ignores `linewidth` under WebGL, so a bare <lineSegments> can only
+  // ever render 1px hairlines regardless of its material settings. <Line> renders an
+  // instanced-quad `LineSegments2`/`LineMaterial` instead, which honors a real pixel width.
   const wireframeGeometry = useMemo(() => new THREE.WireframeGeometry(geometry), [geometry]);
-  // Wire tint: a MUCH darker shade of the fill color (was x0.55) reads as a crisp, well-defined
-  // edge/"grid" line on any pastel instead of a faint tint.
-  const wireColor = useMemo(
-    () => new THREE.Color(object.material.color).multiplyScalar(0.3),
-    [object.material.color],
-  );
+  const wirePoints = useMemo(() => {
+    const pos = wireframeGeometry.getAttribute("position");
+    const points: [number, number, number][] = new Array(pos.count);
+    for (let i = 0; i < pos.count; i++) points[i] = [pos.getX(i), pos.getY(i), pos.getZ(i)];
+    return points;
+  }, [wireframeGeometry]);
 
   return (
     <mesh ref={meshRef} geometry={geometry} scale={object.scale} userData={{ objectId: object.id }} onClick={onClick}>
@@ -137,9 +148,16 @@ export function ClayMesh({ object, meshRef, deleteHighlight, onClick }: ClayMesh
         emissive={emissiveColor}
         emissiveIntensity={emissiveIntensity}
       />
-      <lineSegments geometry={wireframeGeometry} scale={[1.001, 1.001, 1.001]} raycast={() => null}>
-        <lineBasicMaterial color={wireColor} transparent opacity={0.55} />
-      </lineSegments>
+      <Line
+        points={wirePoints}
+        segments
+        color={WIRE_COLOR}
+        lineWidth={WIRE_LINE_WIDTH}
+        transparent
+        opacity={0.85}
+        scale={[1.001, 1.001, 1.001]}
+        raycast={() => null}
+      />
     </mesh>
   );
 }
