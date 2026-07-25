@@ -115,3 +115,34 @@ export function makeShard(size = 0.16, seed = 0): SerializableGeometry {
 export const FRAGILE_PREFIX = "fragile:";
 /** Clench fraction above which a held fragile object breaks. */
 export const CRACK_FORCE = 0.25;
+
+/** A yolk: a squashed sphere, so it reads as a blob rather than a ball. */
+export function makeYolk(radius = 0.2): SerializableGeometry {
+  const g = new THREE.SphereGeometry(radius, 18, 14);
+  const pos = g.getAttribute("position") as THREE.BufferAttribute;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    v.y *= 0.62;                 // flatten
+    v.x *= 1.1; v.z *= 1.1;      // spread
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  g.computeVertexNormals();
+  return bufferGeometryToSerializable(g);
+}
+
+/** A shell half: a hemisphere-ish cap, jittered so the two halves differ. */
+export function makeShell(radius = 0.42, up = true): SerializableGeometry {
+  const g = new THREE.SphereGeometry(radius, 16, 10, 0, Math.PI * 2, up ? 0 : Math.PI / 2, Math.PI / 2);
+  const pos = g.getAttribute("position") as THREE.BufferAttribute;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    v.y *= 1.3;
+    const h = Math.abs(Math.sin((i + 1) * 9.71) * 4375.85) % 1;
+    v.multiplyScalar(0.92 + 0.16 * h);   // ragged break edge
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  g.computeVertexNormals();
+  return bufferGeometryToSerializable(g);
+}

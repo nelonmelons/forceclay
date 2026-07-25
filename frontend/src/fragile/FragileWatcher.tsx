@@ -12,14 +12,14 @@ import { useEmgSocket } from "../providers/EmgSocket";
 import { useFusionStatus } from "../control/fusionStatus";
 import { useEditor } from "../store/editor";
 import { release } from "../physics/PhysicsWorld";
-import { CRACK_FORCE, FRAGILE_PREFIX, makeShard } from "./fragileGeometry";
+import { CRACK_FORCE, FRAGILE_PREFIX, makeShard, makeShell, makeYolk } from "./fragileGeometry";
 
 /** Shards produced when something cracks. */
-const SHARDS = 9;
+const SHARDS = 5;
+/** Debris is cleared this long after a break so the scene does not fill with shells. */
+const DEBRIS_TTL_MS = 5000;
 /** Grace period after pickup before a squeeze can break anything. */
-const SETTLE_MS = 350;
-/** Extra clench above the pickup force required to crack. */
-const SQUEEZE_MARGIN = 0.12;
+const SETTLE_MS = 250;
 /** How far shards are flung from the break point (world units). */
 const SCATTER = 0.28;
 /** Outward speed given to each shard, units/sec. */
@@ -42,6 +42,8 @@ export default function FragileWatcher() {
   const grabForce = useRef<number | null>(null);
   const grabbedId = useRef<string | null>(null);
   const heldSince = useRef(0);
+  /** Ids spawned by the last break, cleared after DEBRIS_TTL_MS. */
+  const debris = useRef<string[]>([]);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -75,9 +77,11 @@ export default function FragileWatcher() {
       // Cracking needs a deliberate EXTRA squeeze, not the force that picked it up. Comparing
       // against an absolute threshold broke the egg the instant it was grabbed, because the
       // grab force already exceeded it -- so it could never be held at all.
+      // Absolute threshold only. Requiring force > pickupForce + margin made cracking
+      // unreachable whenever the grab itself already needed a firm clench: that sum could
+      // exceed 1.0, so no squeeze could ever satisfy it and nothing ever broke.
       if (Date.now() - heldSince.current < SETTLE_MS) return;
-      const base = grabForce.current ?? 0;
-      if (force < CRACK_FORCE || force < base + SQUEEZE_MARGIN) return;
+      if (force < CRACK_FORCE) return;
 
       const store = useEditor.getState();
       const obj = store.objects.find((o) => o.id === heldId);
@@ -87,7 +91,34 @@ export default function FragileWatcher() {
       const [ox, oy, oz] = obj.position;
 
       // Scatter shards around where it broke, then remove the original.
+      const isEgg = obj.name === `${FRAGILE_PREFIX}egg`;
       const spawned: { id: string; a: number }[] = [];
+
+      if (isEgg) {
+        // Two shell halves peel apart and a yolk drops out — the literal read of "it cracks".
+        for (const up of [true, false]) {
+          const shellId = store.addObject({
+            geometry: "custom",
+            customGeometry: makeShell(0.42, up),
+            name: `shard:${heldId}:shell${up ? "T" : "B"}`,
+            position: [ox + (up ? 0.1 : -0.1), oy + (up ? 0.12 : -0.05), oz],
+            physics: "dynamic",
+            material: { color: "#f7efdd", metalness: 0.02, roughness: 0.55, emissive: "#000000", emissiveIntensity: 0 },
+          });
+          spawned.push({ id: shellId, a: up ? 0.5 : Math.PI + 0.5 });
+        }
+        const yolkId = store.addObject({
+          geometry: "custom",
+          customGeometry: makeYolk(0.2),
+          name: `shard:${heldId}:yolk`,
+          position: [ox, oy - 0.04, oz],
+          physics: "dynamic",
+          material: { color: "#ffb300", metalness: 0.0, roughness: 0.25, emissive: "#c26a00", emissiveIntensity: 0.55 },
+        });
+        // Nearly no lateral kick: the yolk should slump straight down, not fly.
+        setTimeout(() => { try { release(yolkId, [0, -0.6, 0]); } catch { /* not registered */ } }, BURST_DELAY_MS);
+        debris.current.push(yolkId);
+      }
       for (let i = 0; i < SHARDS; i++) {
         const a = (i / SHARDS) * Math.PI * 2;
         const r = SCATTER * (0.5 + 0.5 * ((i * 3) % 4) / 4);
@@ -113,6 +144,18 @@ export default function FragileWatcher() {
       store.select(null);
 
       // Fling the shards once Rapier has registered their bodies.
+      for (const { id } of spawned) debris.current.push(id);
+      // Clear the debris after a few seconds so repeated demos do not litter the scene.
+      const toClear = debris.current.slice();
+      debris.current = [];
+      setTimeout(() => {
+        const st = useEditor.getState();
+        for (const id of toClear) {
+          try { st.select(id); st.deleteSelected(); } catch { /* already gone */ }
+        }
+        st.select(null);
+      }, DEBRIS_TTL_MS);
+
       setTimeout(() => {
         for (const { id, a } of spawned) {
           try {
