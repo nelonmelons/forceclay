@@ -6,27 +6,33 @@
  * - Camera navigation (always on, in every mode): one hand `isHolding` (thumb-index pinch)
  *   orbit-rotates the camera; both hands `isHolding` pans (from the left hand's cursor delta)
  *   and dollies (from the change in inter-hand distance). See `scene/cameraGestures.ts`.
- * - Object interaction is keyed off `useEditor`'s `interactionMode`, using the *primary* hand
- *   (`hands/useSkeleton.ts`'s `getPrimaryHand` — right hand, falling back to left):
+ * - Object interaction is keyed off `useEditor`'s `interactionMode`. `"warp"` sculpting and the
+ *   hover/proximity ray still use the *primary* hand (`hands/useSkeleton.ts`'s `getPrimaryHand` —
+ *   right hand, falling back to left), but grab/carry/manipulate is hand-agnostic — EITHER hand
+ *   can pick an object up:
  *   - `"warp"` is the ONLY mode that reads/uses EMG `force` — it sculpts (press-in) the hovered
  *     object and pins it on first deform so it doesn't fall while being worked.
- *   - `"select"`/`"physics"` grab/carry via the primary hand's `isPinching` (all-5-fingertip
- *     cluster; no force gating) with hold-to-pin: holding the carry point within a small radius
- *     for ~1.5s auto-pins the object in place (monotonic progress; a "pinch consumed" latch
- *     stops the same pinch from instantly re-grabbing the just-pinned object). Objects do NOT
- *     rotate with the hand while carried (no twist-to-rotate here — see `"rotate"` below).
+ *   - `"select"`/`"physics"` grab/carry via either hand's `isPinching` (all-5-fingertip cluster;
+ *     no force gating): whichever hand is pinching over a target when nothing is held starts the
+ *     grab (right wins if both pinch at once), tracked in a `heldHand` ref; while held, carry and
+ *     release follow THAT specific hand's cursor/pinch, not always the primary hand. Hold-to-pin:
+ *     holding the carry point within a small radius for ~1.5s auto-pins the object in place
+ *     (monotonic progress; a "pinch consumed" latch stops the same pinch from instantly
+ *     re-grabbing the just-pinned object). Objects do NOT rotate with the hand while carried (no
+ *     twist-to-rotate here — see `"rotate"` below).
  *   - `"delete"` hover-highlights the object under the cursor (via `useFusionStatus`) and
- *     removes it on pinch.
+ *     removes it on pinch (primary hand).
  *   - `"move"` is gizmo-owned; this hook does not grab in that mode.
  *   - `"rotate"`/`"scale"` pinch-grab the hovered/target object (same proximity-target logic as
- *     `"select"`) and pin it for the duration of the manipulation so it doesn't fall. Camera
- *     navigation is fully disabled in these two modes so both hands are free for manipulation.
- *     Rotate: one hand pinching twists the object about the camera's forward axis by the hand's
- *     roll delta; both hands pinching instead tilts/twists it about an arbitrary axis derived
- *     from the change in the vector between the two hands (cursor + depth). Scale: uniform-
- *     scales the object by an exponential function of the hand's depth-proxy delta since
- *     grab-start (pulling the hand back grows the object). Neither mode translates the object.
- *     The mouse gizmo keeps working alongside hand manipulation in both.
+ *     `"select"`, evaluated per-hand) with either hand, and pin it for the duration of the
+ *     manipulation so it doesn't fall. Camera navigation is fully disabled in these two modes so
+ *     both hands are free for manipulation. Rotate: one hand pinching twists the object about the
+ *     camera's forward axis by that hand's roll delta (switching which hand is driving re-snapshots
+ *     the baseline so it doesn't jump); both hands pinching instead tilts/twists it about an
+ *     arbitrary axis derived from the change in the vector between the two hands (cursor + depth).
+ *     Scale: uniform-scales the object by an exponential function of the grabbing hand's
+ *     depth-proxy delta since grab-start (pulling the hand back grows the object). Neither mode
+ *     translates the object. The mouse gizmo keeps working alongside hand manipulation in both.
  *   - `"edit"` is vertex-handle-owned (`VertexEditHandles`); this hook does not grab/sculpt.
  *
  * Must be called from a component mounted *inside* the r3f `<Canvas>` (it uses `useFrame`/
@@ -52,7 +58,10 @@ import { BRUSH_RADIUS } from "../contracts";
 import { useFusionStatus } from "./fusionStatus";
 import { useHandState } from "./useHandState";
 import { orbitRotate, orbitPan, orbitDolly } from "../scene/cameraGestures";
-import type { InteractionMode } from "../types";
+import type { HandInfo, InteractionMode } from "../types";
+
+/** Which hand (if any) currently owns a grab/manipulation. */
+type HandSide = "left" | "right";
 
 export { useFusionStatus } from "./fusionStatus";
 
@@ -81,8 +90,6 @@ const THROW_GAIN = 40;
 const PROXIMITY_NDC = 0.28;
 /** Ignore hand-roll deltas smaller than this (radians) so micro-jitter doesn't dribble rotation. */
 const ROTATE_DEADZONE = 0.01;
-/** Sensitivity of pinch-to-scale: exponent applied to the depth-proxy delta since grab-start. */
-const SCALE_SENS = 3.5;
 /** Uniform-scale clamp bounds (multiplier of the object's scale at grab-start). */
 const SCALE_MIN = 0.2;
 const SCALE_MAX = 5;
@@ -133,6 +140,10 @@ export function useFusion(): FusionFrame {
   // position/force down to <HandCursor> as props; acceptable cost for one small mesh.
   const [frame, setFrame] = useState<FusionFrame>({ position: [0, 0, 0], force: 0, mode: "select", hasHit: false });
   const heldId = useRef<string | null>(null);
+  /** Which hand (`"left"`/`"right"`) is currently carrying `heldId.current` in `"select"`/
+   *  `"physics"` mode — grab/carry/release all follow THIS hand, not the primary hand, so either
+   *  hand can pick objects up. Null while nothing is held. */
+  const heldHand = useRef<HandSide | null>(null);
   const lastSculptTime = useRef(0);
   const holdStartPos = useRef<THREE.Vector3 | null>(null);
   const holdStartTime = useRef(0);
@@ -146,14 +157,22 @@ export function useFusion(): FusionFrame {
    *  can't immediately re-grab it and restart the timer at 0. Clears the moment the hand
    *  un-pinches (or drops out of frame). */
   const pinchConsumed = useRef(false);
+  /** Which hand's still-active pinch set `pinchConsumed`, so the latch clears the moment THAT
+   *  hand un-pinches rather than depending on the primary hand. */
+  const pinchConsumedHand = useRef<HandSide | null>(null);
   /** `"rotate"`/`"scale"` pinch-manipulation state: the object currently grabbed, plus the
    *  hand-pose and object-pose snapshots taken at grab-start that each frame's delta is measured
    *  against (avoids drift from accumulating small per-frame deltas). */
   const manipId = useRef<string | null>(null);
+  /** `"rotate"` single-hand twist: which hand is currently driving it, so switching hands
+   *  re-snapshots the roll baseline instead of jumping. Unused in two-hand rotate/scale. */
+  const manipHand = useRef<HandSide | null>(null);
   const manipStartRoll = useRef(0);
   const manipStartRotation = useRef<[number, number, number]>([0, 0, 0]);
-  const manipStartDepth = useRef(0);
-  const manipStartScale = useRef<[number, number, number]>([1, 1, 1]);
+  /** `"scale"` two-hand pinch-distance snapshot: inter-hand screen distance and the object's
+   *  scale at the moment both hands started pinching together. */
+  const scaleInitialDist = useRef(0);
+  const scaleInitialScale = useRef<[number, number, number]>([1, 1, 1]);
   /** Two-hand rotate: previous frame's (right-hand - left-hand) cursor+depth vector, for
    *  deriving an arbitrary-axis delta rotation. Null whenever both hands aren't pinching. */
   const prevInterHandVec = useRef<THREE.Vector3 | null>(null);
