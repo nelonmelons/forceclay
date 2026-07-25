@@ -349,7 +349,12 @@ export function useFusion(): FusionFrame {
             raycaster.setFromCamera(new THREE.Vector2(hand.cursorNdc.x, hand.cursorNdc.y), camera);
             const planePt = new THREE.Vector3();
             if (raycaster.ray.intersectPlane(dragPlane.current, planePt)) {
-              dragOffset.current.copy(objWorld).sub(planePt);
+              // Fragile props are held IN the hand: zero the grab offset so the object centres
+              // on the hand point instead of keeping the offset it was picked up at, which left
+              // the egg floating beside the hand rather than in it.
+              const fragile = editor.objects.find((o) => o.id === targetId)?.name?.startsWith("fragile:");
+              if (fragile) dragOffset.current.set(0, 0, 0);
+              else dragOffset.current.copy(objWorld).sub(planePt);
             } else {
               dragOffset.current.set(0, 0, 0);
             }
