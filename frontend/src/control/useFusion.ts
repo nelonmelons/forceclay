@@ -75,12 +75,10 @@ const PIN_DURATION = 1.5;
 const CARRY_LERP = 0.2;
 /** Per-frame carry delta → release/throw velocity (units/sec). */
 const THROW_GAIN = 40;
-/** Frames the pinch must stay absent before a carried object is released. ~5 frames @60fps. */
-const RELEASE_FRAMES = 5;
 /** Screen-space (NDC) radius within which an object counts as hovered/grabbable when the ray
  *  doesn't land a direct hit — mirrors ShapeShift's `pointer.distanceTo(pos2D) < TOLERANCE`
  *  proximity highlight. Generous so a noisy hand cursor can still target a small object. */
-const PROXIMITY_NDC = 0.4;
+const PROXIMITY_NDC = 0.28;
 /** Ignore hand-roll deltas smaller than this (radians) so micro-jitter doesn't dribble rotation. */
 const ROTATE_DEADZONE = 0.01;
 /** Sensitivity of pinch-to-scale: exponent applied to the depth-proxy delta since grab-start. */
@@ -137,8 +135,6 @@ export function useFusion(): FusionFrame {
   const heldId = useRef<string | null>(null);
   const lastSculptTime = useRef(0);
   const holdStartPos = useRef<THREE.Vector3 | null>(null);
-  /** Consecutive frames the pinch has been absent — release only after RELEASE_FRAMES of them. */
-  const noPinchFrames = useRef(0);
   const holdStartTime = useRef(0);
   const wasPinching = useRef(false);
   /** ShapeShift-style carry state: camera-facing drag plane, grab offset, and smoothed carry point. */
@@ -361,23 +357,16 @@ export function useFusion(): FusionFrame {
             lastCarryPos.current.copy(objWorld);
             grab(targetId, [objWorld.x, objWorld.y, objWorld.z]);
             heldId.current = targetId;
-            noPinchFrames.current = 0;
             holdStartPos.current = null;
           }
         } else {
           const held = heldId.current;
-          // Debounced release. Dropping on the first frame without a pinch meant a single bad
-          // vision frame -- hand momentarily lost, or landmark jitter collapsing the pinch
-          // test -- threw the object across the room. Require the loss to persist.
-          if (!hand || !hand.isPinching) noPinchFrames.current++;
-          else noPinchFrames.current = 0;
-          if (noPinchFrames.current >= RELEASE_FRAMES) {
+          if (!hand || !hand.isPinching) {
             const velocity = carryPos.current.clone().sub(lastCarryPos.current).multiplyScalar(THROW_GAIN);
             release(held, [velocity.x, velocity.y, velocity.z]);
             heldId.current = null;
             holdStartPos.current = null;
-            noPinchFrames.current = 0;
-          } else if (hand && hand.isPinching) {
+          } else {
             // Follow the drag plane, smoothed. lastCarryPos is captured before the lerp so the
             // per-frame delta doubles as throw velocity on release.
             raycaster.setFromCamera(new THREE.Vector2(hand.cursorNdc.x, hand.cursorNdc.y), camera);

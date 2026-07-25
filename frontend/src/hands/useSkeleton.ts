@@ -15,9 +15,6 @@ export const FRAME_WIDTH = 640;
 export const FRAME_HEIGHT = 360;
 const CANVAS_DIAG = Math.hypot(FRAME_WIDTH, FRAME_HEIGHT);
 const CURSOR_EMA = 0.2;
-/** Fingertip cluster radius, as a fraction of PALM length, that counts as a closed grab hand.
- *  Generous on purpose: a missed pickup is far more annoying than an occasional early one. */
-const PINCH_TIP_CLUSTER = 0.95;
 /** ShapeShift holds the thumb-index distance history over this window to judge `isHolding`. */
 const HOLD_STABILITY_WINDOW_MS = 50;
 /** Smoothing for the wrist->middle-MCP roll angle used by pinch-to-rotate. */
@@ -69,7 +66,6 @@ function computeHandInfo(hand: VisionHand): HandInfo {
   const handDiag = Math.hypot(maxX - minX, maxY - minY);
   const depthProxy = 1 - Math.min(Math.max(handDiag / CANVAS_DIAG, 0), 1);
   const spread = (maxX - minX + (maxY - minY)) / 2;
-  const wrist0 = hand.landmarks[0];
 
   // Pinch: all five fingertips clustered near their centroid (ShapeShift's grab/drag gesture).
   const fingertips = [4, 8, 12, 16, 20].map((i) => hand.landmarks[i]);
@@ -78,17 +74,7 @@ function computeHandInfo(hand: VisionHand): HandInfo {
     fingertips.reduce((s, p) => s + p[1], 0) / fingertips.length,
   ];
   const maxTipDist = Math.max(...fingertips.map((p) => Math.hypot(p[0] - centroid[0], p[1] - centroid[1])));
-  // Normalise by PALM length (wrist -> middle MCP), not by the hand's bounding box.
-  //
-  // `spread` collapses as the hand closes, so `maxTipDist < 0.3 * spread` was a threshold that
-  // shrank at exactly the moment it needed to be met -- closing your fist tightened the bar it
-  // was being judged against, which is why pickup was so unreliable. Palm length is rigid: it
-  // barely changes between an open hand and a fist, so it is a stable scale reference.
-  const palmLen = Math.max(
-    Math.hypot(hand.landmarks[9][0] - wrist0[0], hand.landmarks[9][1] - wrist0[1]),
-    1e-3,
-  );
-  const isPinching = maxTipDist < PINCH_TIP_CLUSTER * palmLen;
+  const isPinching = maxTipDist < 0.3 * spread;
   const avgTipSpread =
     fingertips.reduce((s, p) => s + Math.hypot(p[0] - centroid[0], p[1] - centroid[1]), 0) / fingertips.length;
   const isOpen = avgTipSpread > 0.45 * spread;
