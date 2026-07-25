@@ -65,11 +65,7 @@ export default function Toolbar() {
   return (
     <div
       style={{
-        // Top-right; CalibrationPanel moved to bottom-center so this corner is now clear.
-        position: "fixed",
-        top: 16,
-        right: 16,
-        zIndex: 20,
+        // Positioned by the top-right column wrapper in App.tsx (stacked above the FRAGILE panel).
         display: "flex",
         flexWrap: "wrap",
         gap: 6,

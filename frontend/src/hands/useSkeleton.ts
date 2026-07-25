@@ -138,5 +138,7 @@ export function useSkeleton(hands: VisionHand[] | undefined): TwoHandState {
  * `refHand = interactionRef.current.Right || interactionRef.current.Left`.
  */
 export function getPrimaryHand(hands: TwoHandState): HandInfo | null {
-  return hands.right ?? hands.left;
+  // Left hand takes priority: the EMG electrodes are on the LEFT forearm, so the hand that
+  // grabs must be the one whose clench force is actually being measured.
+  return hands.left ?? hands.right;
 }

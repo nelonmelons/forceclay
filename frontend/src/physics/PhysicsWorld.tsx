@@ -135,9 +135,29 @@ function SceneBodies() {
   );
 }
 
+/**
+ * Absolute floor. Nothing may sit below the grid, no matter what.
+ *
+ * The static ground collider alone is not enough: a fast carry can push a KINEMATIC body
+ * straight through it (kinematic bodies are not stopped by colliders, they are driven), and a
+ * dynamic body can tunnel on a big timestep. This clamps position every frame as a hard
+ * invariant rather than relying on collision response.
+ */
+const FLOOR_Y = 0;
+
+/** Clamps one body above FLOOR_Y, killing downward velocity so it settles instead of buzzing. */
+function enforceFloor(body: RapierRigidBody): void {
+  const t = body.translation();
+  if (t.y >= FLOOR_Y) return;
+  body.setTranslation({ x: t.x, y: FLOOR_Y, z: t.z }, true);
+  const v = body.linvel();
+  if (v.y < 0) body.setLinvel({ x: v.x, y: 0, z: v.z }, true);
+}
+
 /** Per-frame driver for grab-follow and squash easing; mounted once inside `<Physics>`. */
 function PhysicsRuntime() {
   useFrame(() => {
+    for (const b of bodies.values()) enforceFloor(b);
     for (const [id, point] of grabPoints) {
       const body = bodies.get(id);
       if (body) body.setNextKinematicTranslation(point);
@@ -206,7 +226,8 @@ export function grab(id: string, handWorldPos: [number, number, number]): void {
   if (!body) return;
   body.setBodyType(RigidBodyType.KinematicPositionBased, true);
   const point = grabPoints.get(id) ?? new THREE.Vector3();
-  point.set(handWorldPos[0], handWorldPos[1], handWorldPos[2]);
+  // Clamp the carry target as well, so you cannot drag an object under the grid.
+  point.set(handWorldPos[0], Math.max(handWorldPos[1], FLOOR_Y), handWorldPos[2]);
   grabPoints.set(id, point);
 }
 

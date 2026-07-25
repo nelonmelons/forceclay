@@ -9,6 +9,8 @@ import { EmgSocketProvider } from "./providers/EmgSocket";
 import ForceHUD from "./ui/ForceHUD";
 import Toolbar from "./ui/Toolbar";
 import CalibrationPanel from "./ui/CalibrationPanel";
+import FragileWatcher from "./fragile/FragileWatcher";
+import FragileSpawnButtons from "./fragile/FragileSpawnButtons";
 import ConnectionStatus from "./ui/ConnectionStatus";
 import CameraPip from "./ui/CameraPip";
 import HandOverlay from "./ui/HandOverlay";
@@ -36,8 +38,25 @@ function App() {
           <HandOverlay />
           <CameraPip />
           <ForceHUD />
-          <Toolbar />
+          {/* Top-right controls stacked in one column so the FRAGILE block always flows BELOW
+              the toolbar (whatever its wrapped height) instead of overlapping it. */}
+          <div
+            style={{
+              position: "fixed",
+              top: 16,
+              right: 16,
+              zIndex: 20,
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+              alignItems: "flex-end",
+            }}
+          >
+            <Toolbar />
+            <FragileSpawnButtons />
+          </div>
           <CalibrationPanel />
+          <FragileWatcher />
           <ConnectionStatus />
           <button
             onClick={() => window.dispatchEvent(new Event(SPAWN_EVENT))}
