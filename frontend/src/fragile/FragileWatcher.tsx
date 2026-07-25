@@ -11,7 +11,7 @@ import { useEffect, useRef } from "react";
 import { useEmgSocket } from "../providers/EmgSocket";
 import { useFusionStatus } from "../control/fusionStatus";
 import { useEditor } from "../store/editor";
-import { release } from "../physics/PhysicsWorld";
+import { getBodyPosition, release } from "../physics/PhysicsWorld";
 import { CRACK_FORCE, FRAGILE_PREFIX, makeShard, makeShell, makeYolk } from "./fragileGeometry";
 
 /** Shards produced when something cracks. */
@@ -88,11 +88,31 @@ export default function FragileWatcher() {
       if (!obj || !obj.name?.startsWith(FRAGILE_PREFIX)) return;
 
       broken.current.add(heldId);
-      const [ox, oy, oz] = obj.position;
+      // Read the break point from the LIVE body, not obj.position: a carried object is driven
+      // kinematically and the store transform lags behind where it visually is.
+      const bp = getBodyPosition(heldId);
+      const [ox, oy, oz] = bp ?? obj.position;
+
+      // Destroy the original FIRST. It used to be deleted after the shell/yolk spawn, so any
+      // throw in the geometry builders aborted the callback and left the egg intact -- the
+      // "it turns into the cracked egg" step never happened. Releasing the grab first stops the
+      // fusion loop driving a body that is about to vanish.
+      try {
+        release(heldId, [0, 0, 0]);
+      } catch {
+        // Not registered; nothing to release.
+      }
+      {
+        const st = useEditor.getState();
+        st.select(heldId);
+        st.deleteSelected();
+        st.select(null);
+      }
 
       // Scatter shards around where it broke, then remove the original.
       const isEgg = obj.name === `${FRAGILE_PREFIX}egg`;
       const spawned: { id: string; a: number }[] = [];
+      try {
 
       if (isEgg) {
         // Two shell halves peel apart and a yolk drops out — the literal read of "it cracks".
@@ -139,11 +159,10 @@ export default function FragileWatcher() {
         spawned.push({ id: shardId, a });
       }
 
-      store.select(heldId);
-      store.deleteSelected();
-      store.select(null);
-
       // Fling the shards once Rapier has registered their bodies.
+      } catch (e) {
+        console.warn("[fragile] debris spawn failed", e);
+      }
       for (const { id } of spawned) debris.current.push(id);
       // Clear the debris after a few seconds so repeated demos do not litter the scene.
       const toClear = debris.current.slice();
