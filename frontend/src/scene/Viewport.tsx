@@ -98,13 +98,21 @@ export default function Viewport({ children }: ViewportProps) {
         <planeGeometry args={[400, 400]} />
         <meshBasicMaterial color={GROUND_COLOR} fog />
       </mesh>
+      {/* Net-like grid: dense small cells with bolder section lines every unit.
+          The previous #d8dce3/#b9c0cc on a white ground had almost no contrast — nearly
+          invisible. cellSize 0.25 quadruples the line count, and the thicknesses make the
+          lines read as a net rather than a faint wash. */}
       <Grid
         args={[20, 20]}
         position={[0, 0, 0]}
-        cellColor="#d8dce3"
-        sectionColor="#b9c0cc"
-        fadeDistance={120}
-        fadeStrength={1.2}
+        cellSize={0.25}
+        cellThickness={1.0}
+        cellColor="#8d97a8"
+        sectionSize={1}
+        sectionThickness={2.0}
+        sectionColor="#3f4a5c"
+        fadeDistance={90}
+        fadeStrength={1}
         infiniteGrid
       />
       <PhysicsWorld>{children}</PhysicsWorld>
