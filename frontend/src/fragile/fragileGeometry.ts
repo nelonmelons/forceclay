@@ -5,9 +5,23 @@
  * its existing custom-buffer path — no new `GeometryKind` and no change to the renderer.
  */
 import * as THREE from "three";
-import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { bufferGeometryToSerializable } from "../sculpt/geometry";
-import type { SerializableGeometry } from "../types";
+import { mergeGeometries, mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { bufferGeometryToSerializable } from "../sculpt/geometry.ts";
+
+/**
+ * Serialize a geometry, welding it first if it is non-indexed.
+ *
+ * bufferGeometryToSerializable throws on non-indexed input, and several three.js primitives are
+ * non-indexed (IcosahedronGeometry, anything out of mergeGeometries). Those throws killed the
+ * prop spawn, and Rapier then crashed the whole Canvas trying to build a hull collider from the
+ * missing geometry -- a white screen.
+ */
+export function toSerializable(geom: THREE.BufferGeometry): SerializableGeometry {
+  const indexed = geom.getIndex() ? geom : mergeVertices(geom);
+  indexed.computeVertexNormals();
+  return bufferGeometryToSerializable(indexed);
+}
+import type { SerializableGeometry } from "../types.ts";
 
 /**
  * An egg: a sphere with a vertical stretch and an asymmetric taper.
@@ -30,7 +44,7 @@ export function makeEgg(radius = 0.5, detail = 4): SerializableGeometry {
   }
   g.computeVertexNormals();
   void detail;
-  return bufferGeometryToSerializable(g);
+  return toSerializable(g);
 }
 
 /**
@@ -86,7 +100,7 @@ export function makeWillow(scale = 0.5): SerializableGeometry {
   const merged = mergeGeometries(parts.map((p) => (p.getIndex() ? p.toNonIndexed() : p)), false);
   if (!merged) throw new Error("makeWillow: geometry merge failed");
   merged.computeVertexNormals();
-  return bufferGeometryToSerializable(merged);
+  return toSerializable(merged);
 }
 
 /**
@@ -108,7 +122,7 @@ export function makeShard(size = 0.16, seed = 0): SerializableGeometry {
     pos.setXYZ(i, v.x, v.y, v.z);
   }
   g.computeVertexNormals();
-  return bufferGeometryToSerializable(g);
+  return toSerializable(g);
 }
 
 /** Names that mark an object as breakable, and the force fraction that cracks it. */
@@ -128,7 +142,7 @@ export function makeYolk(radius = 0.2): SerializableGeometry {
     pos.setXYZ(i, v.x, v.y, v.z);
   }
   g.computeVertexNormals();
-  return bufferGeometryToSerializable(g);
+  return toSerializable(g);
 }
 
 /** A shell half: a hemisphere-ish cap, jittered so the two halves differ. */
@@ -144,5 +158,5 @@ export function makeShell(radius = 0.42, up = true): SerializableGeometry {
     pos.setXYZ(i, v.x, v.y, v.z);
   }
   g.computeVertexNormals();
-  return bufferGeometryToSerializable(g);
+  return toSerializable(g);
 }

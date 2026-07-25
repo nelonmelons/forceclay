@@ -7,9 +7,8 @@
  */
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { bufferGeometryToSerializable } from "../sculpt/geometry";
-import type { SerializableGeometry } from "../types";
-import { makeEgg, makeShell, makeShard, makeWillow, makeYolk } from "./fragileGeometry";
+import type { SerializableGeometry } from "../types.ts";
+import { makeEgg, makeShell, makeShard, makeWillow, makeYolk, toSerializable } from "./fragileGeometry.ts";
 
 export interface Mat {
   color: string; metalness: number; roughness: number; emissive: string; emissiveIntensity: number;
@@ -61,7 +60,7 @@ function blob(r: number): SerializableGeometry {
     pos.setXYZ(i, v.x, v.y, v.z);
   }
   g.computeVertexNormals();
-  return bufferGeometryToSerializable(g);
+  return toSerializable(g);
 }
 
 /** Squeeze bottle: tapered body plus a narrow neck, merged. */
@@ -76,13 +75,13 @@ function bottle(): SerializableGeometry {
   const m = mergeGeometries(parts, false);
   if (!m) throw new Error("bottle: merge failed");
   m.computeVertexNormals();
-  return bufferGeometryToSerializable(m);
+  return toSerializable(m);
 }
 
 /** Drinks can: a plain cylinder, tall and narrow. */
 function can(): SerializableGeometry {
   const g = new THREE.CylinderGeometry(0.17, 0.17, 0.52, 16);
-  return bufferGeometryToSerializable(g);
+  return toSerializable(g);
 }
 
 /** Balloon: a sphere pulled to a point at the knot. */
@@ -99,7 +98,7 @@ function balloon(): SerializableGeometry {
     pos.setXYZ(i, v.x, v.y, v.z);
   }
   g.computeVertexNormals();
-  return bufferGeometryToSerializable(g);
+  return toSerializable(g);
 }
 
 /** Radial spray of liquid blobs, angled upward and outward. */
