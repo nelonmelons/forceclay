@@ -8,6 +8,20 @@
 import { useEffect, useRef } from "react";
 import { useVisionSocket } from "../providers/VisionSocket";
 
+/** Joint rows across the hand: tips, DIPs, PIPs, MCPs, then the wrist. Webbing connects along
+ *  and between these rows to build the net. */
+const JOINT_ROWS: number[][] = [
+  [4, 8, 12, 16, 20],   // fingertips
+  [3, 7, 11, 15, 19],   // DIP row
+  [2, 6, 10, 14, 18],   // PIP row
+  [1, 5, 9, 13, 17],    // MCP row
+  [0, 0, 0, 0, 0],      // wrist (all rungs collapse to the wrist, fanning the palm)
+];
+/** Bold red bones, hot pink webbing, white-ringed joints — high contrast on a light scene. */
+const BONE_COLOR = "#ff2d2d";
+const WEB_COLOR = "#ff7a9c";
+const JOINT_COLOR = "#ffffff";
+
 const SOURCE_WIDTH = 640;
 const SOURCE_HEIGHT = 360;
 
@@ -40,22 +54,46 @@ export default function HandOverlay() {
         const scaleX = canvas.width / SOURCE_WIDTH;
         const scaleY = canvas.height / SOURCE_HEIGHT;
         for (const hand of data.hands) {
-          ctx.strokeStyle = "#39ff88";
-          ctx.lineWidth = 2;
-          for (const [a, b] of hand.connections) {
+          const line = (a: number, b: number) => {
             const p = hand.landmarks[a];
             const q = hand.landmarks[b];
-            if (!p || !q) continue;
+            if (!p || !q) return;
             ctx.beginPath();
             ctx.moveTo(p[0] * scaleX, p[1] * scaleY);
             ctx.lineTo(q[0] * scaleX, q[1] * scaleY);
             ctx.stroke();
+          };
+
+          // Webbing first, underneath: rungs across the digits at each joint row turn the 20
+          // skeleton bones into a net instead of five separate stick fingers.
+          ctx.strokeStyle = WEB_COLOR;
+          ctx.lineWidth = 1.6;
+          for (const row of JOINT_ROWS) {
+            for (let i = 0; i < row.length - 1; i++) line(row[i], row[i + 1]);
           }
-          ctx.fillStyle = "#ffffff";
+          // Diagonals inside each row, so the mesh reads as a net rather than a ladder.
+          for (let r = 0; r < JOINT_ROWS.length - 1; r++) {
+            const a = JOINT_ROWS[r];
+            const b = JOINT_ROWS[r + 1];
+            for (let i = 0; i < Math.min(a.length, b.length) - 1; i++) {
+              line(a[i], b[i + 1]);
+              line(a[i + 1], b[i]);
+            }
+          }
+
+          // Bones on top, bolder and brighter so the skeleton still dominates.
+          ctx.strokeStyle = BONE_COLOR;
+          ctx.lineWidth = 3.5;
+          for (const [a, b] of hand.connections) line(a, b);
+
+          ctx.fillStyle = JOINT_COLOR;
+          ctx.strokeStyle = "#ffffff";
+          ctx.lineWidth = 1.5;
           for (const [x, y] of hand.landmarks) {
             ctx.beginPath();
-            ctx.arc(x * scaleX, y * scaleY, 4, 0, Math.PI * 2);
+            ctx.arc(x * scaleX, y * scaleY, 5, 0, Math.PI * 2);
             ctx.fill();
+            ctx.stroke();
           }
         }
       }
