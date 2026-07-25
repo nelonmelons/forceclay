@@ -1,191 +1,145 @@
 /**
- * Breaks a held fragile object when the clench exceeds CRACK_FORCE.
+ * Bursts a held prop when the clench passes its threshold: egg cracks, ketchup squirts, balloon
+ * pops. Behaviour comes from `propCatalog.ts`, so this file stays generic — adding a prop needs
+ * no change here.
  *
- * Reads EMG force straight from `useEmgSocket` rather than from `useFusionStatus`, because the
- * fusion loop zeroes `force` outside "warp" mode — so the status store reports 0 during a
- * carry, which is exactly when we need it.
+ * Reads EMG force straight from `useEmgSocket`, NOT from `useFusionStatus`, because the fusion
+ * loop zeroes `force` outside "warp" mode — the status store reports 0 during a carry, which is
+ * exactly when the squeeze check needs it.
  *
- * Purely additive: it watches the store and reacts, so it touches none of the grab/carry logic.
+ * Purely additive: it watches the store and reacts, touching none of the grab/carry logic.
  */
 import { useEffect, useRef } from "react";
 import { useEmgSocket } from "../providers/EmgSocket";
 import { useFusionStatus } from "../control/fusionStatus";
 import { useEditor } from "../store/editor";
 import { getBodyPosition, release } from "../physics/PhysicsWorld";
-import { CRACK_FORCE, FRAGILE_PREFIX, makeShard, makeShell, makeYolk } from "./fragileGeometry";
+import { FRAGILE_PREFIX } from "./fragileGeometry";
+import { findProp } from "./propCatalog";
 
-/** Shards produced when something cracks. */
-const SHARDS = 5;
-/** Debris is cleared this long after a break so the scene does not fill with shells. */
-const DEBRIS_TTL_MS = 5000;
-/** Grace period after pickup before a squeeze can break anything. */
+/** Grace period after pickup before a squeeze can burst anything. */
 const SETTLE_MS = 250;
-/** How far shards are flung from the break point (world units). */
-const SCATTER = 0.28;
-/** Outward speed given to each shard, units/sec. */
-const BURST_SPEED = 3.2;
-/** Upward kick so shards arc rather than sliding along the floor. */
-const BURST_LIFT = 2.4;
 /**
- * Delay before flinging shards. Rapier registers a body on mount, which happens on the next
- * React commit -- applying velocity immediately would hit an unregistered body and no-op, so
- * the shards would just drop straight down instead of bursting.
+ * Delay before applying debris velocity. Rapier registers a body on mount, which happens on the
+ * next React commit — applying velocity immediately hits an unregistered body and no-ops, so the
+ * debris would drop straight down instead of bursting.
  */
 const BURST_DELAY_MS = 60;
+/** Debris is cleared this long after a burst so repeated demos do not litter the scene. */
+const DEBRIS_TTL_MS = 5000;
+/** A surviving prop (bottle, can) can be squeezed again after this long. */
+const REARM_MS = 900;
+/** Strain glow starts at this fraction of the threshold. */
+const GLOW_START = 0.35;
 
 /** Mounted once, outside the Canvas. Renders nothing. */
 export default function FragileWatcher() {
   const emg = useEmgSocket();
-  /** Guards against breaking the same object twice while force stays above the threshold. */
-  const broken = useRef<Set<string>>(new Set());
-  /** Force sampled when the current object was first picked up. */
-  const grabForce = useRef<number | null>(null);
+  /** id -> when it last burst, so one squeeze does not fire on every tick. */
+  const lastBurst = useRef<Map<string, number>>(new Map());
   const grabbedId = useRef<string | null>(null);
   const heldSince = useRef(0);
-  /** Ids spawned by the last break, cleared after DEBRIS_TTL_MS. */
-  const debris = useRef<string[]>([]);
 
   useEffect(() => {
-    const id = setInterval(() => {
+    const tick = setInterval(() => {
       const force = emg.getData()?.force ?? 0;
       const heldId = useFusionStatus.getState().heldObjectId;
 
-      // Track pickup: remember the force it took to grab, and when.
       if (heldId !== grabbedId.current) {
         grabbedId.current = heldId;
-        grabForce.current = heldId ? force : null;
         heldSince.current = heldId ? Date.now() : 0;
         return;
       }
-      if (!heldId || broken.current.has(heldId)) return;
-
-      // Strain glow: ramp the object's emissive as the squeeze approaches the crack point, so
-      // the break is telegraphed instead of arriving out of nowhere.
-      {
-        const st = useEditor.getState();
-        const o = st.objects.find((x) => x.id === heldId);
-        if (o?.name?.startsWith(FRAGILE_PREFIX)) {
-          const base = grabForce.current ?? 0;
-          const strain = Math.min(Math.max((force - base) / Math.max(CRACK_FORCE - base, 1e-3), 0), 1);
-          st.updateMaterial(heldId, {
-            emissive: strain > 0.05 ? "#ff3b1f" : "#000000",
-            emissiveIntensity: strain * 1.6,
-          });
-        }
-      }
-
-      // Cracking needs a deliberate EXTRA squeeze, not the force that picked it up. Comparing
-      // against an absolute threshold broke the egg the instant it was grabbed, because the
-      // grab force already exceeded it -- so it could never be held at all.
-      // Absolute threshold only. Requiring force > pickupForce + margin made cracking
-      // unreachable whenever the grab itself already needed a firm clench: that sum could
-      // exceed 1.0, so no squeeze could ever satisfy it and nothing ever broke.
+      if (!heldId) return;
       if (Date.now() - heldSince.current < SETTLE_MS) return;
-      if (force < CRACK_FORCE) return;
 
       const store = useEditor.getState();
       const obj = store.objects.find((o) => o.id === heldId);
-      if (!obj || !obj.name?.startsWith(FRAGILE_PREFIX)) return;
+      if (!obj?.name?.startsWith(FRAGILE_PREFIX)) return;
+      const spec = findProp(obj.name.slice(FRAGILE_PREFIX.length));
+      if (!spec) return;
 
-      broken.current.add(heldId);
-      // Read the break point from the LIVE body, not obj.position: a carried object is driven
-      // kinematically and the store transform lags behind where it visually is.
+      // Strain glow: ramp emissive as the squeeze closes on THIS prop's threshold, so the burst is
+      // telegraphed instead of arriving out of nowhere.
+      const strain = Math.min(Math.max(force / spec.threshold, 0), 1);
+      store.updateMaterial(heldId, {
+        emissive: strain > GLOW_START ? "#ff3b1f" : spec.material.emissive,
+        emissiveIntensity:
+          strain > GLOW_START ? (strain - GLOW_START) * 2.4 : spec.material.emissiveIntensity,
+      });
+
+      if (force < spec.threshold) return;
+      const last = lastBurst.current.get(heldId) ?? 0;
+      if (Date.now() - last < REARM_MS) return;
+      lastBurst.current.set(heldId, Date.now());
+
+      // Burst point from the LIVE body: a carried object is driven kinematically, so the store
+      // transform lags behind where it visually is and debris would spawn at a stale location.
       const bp = getBodyPosition(heldId);
       const [ox, oy, oz] = bp ?? obj.position;
 
-      // Destroy the original FIRST. It used to be deleted after the shell/yolk spawn, so any
-      // throw in the geometry builders aborted the callback and left the egg intact -- the
-      // "it turns into the cracked egg" step never happened. Releasing the grab first stops the
-      // fusion loop driving a body that is about to vanish.
-      try {
-        release(heldId, [0, 0, 0]);
-      } catch {
-        // Not registered; nothing to release.
-      }
-      {
+      // Destroy a non-surviving prop FIRST, before anything that can throw. Deleting it after the
+      // debris spawn meant a geometry failure aborted the callback and left the original intact.
+      if (!spec.survives) {
+        try {
+          release(heldId, [0, 0, 0]);
+        } catch {
+          // Not registered; nothing to release.
+        }
         const st = useEditor.getState();
         st.select(heldId);
         st.deleteSelected();
         st.select(null);
+      } else {
+        // A bottle keeps existing — settle it back to its own look instead of staying red-hot.
+        store.updateMaterial(heldId, {
+          emissive: spec.material.emissive,
+          emissiveIntensity: spec.material.emissiveIntensity,
+        });
       }
 
-      // Scatter shards around where it broke, then remove the original.
-      const isEgg = obj.name === `${FRAGILE_PREFIX}egg`;
-      const spawned: { id: string; a: number }[] = [];
+      const spawned: { id: string; velocity: [number, number, number] }[] = [];
       try {
-
-      if (isEgg) {
-        // Two shell halves peel apart and a yolk drops out — the literal read of "it cracks".
-        for (const up of [true, false]) {
-          const shellId = store.addObject({
+        const st = useEditor.getState();
+        for (const d of spec.debris()) {
+          const id = st.addObject({
             geometry: "custom",
-            customGeometry: makeShell(0.42, up),
-            name: `shard:${heldId}:shell${up ? "T" : "B"}`,
-            position: [ox + (up ? 0.1 : -0.1), oy + (up ? 0.12 : -0.05), oz],
+            customGeometry: d.geometry,
+            name: `debris:${spec.key}`,
+            position: [ox + d.offset[0], oy + d.offset[1], oz + d.offset[2]],
             physics: "dynamic",
-            material: { color: "#f7efdd", metalness: 0.02, roughness: 0.55, emissive: "#000000", emissiveIntensity: 0 },
+            material: d.material,
           });
-          spawned.push({ id: shellId, a: up ? 0.5 : Math.PI + 0.5 });
+          spawned.push({ id, velocity: d.velocity });
         }
-        const yolkId = store.addObject({
-          geometry: "custom",
-          customGeometry: makeYolk(0.2),
-          name: `shard:${heldId}:yolk`,
-          position: [ox, oy - 0.04, oz],
-          physics: "dynamic",
-          material: { color: "#ffb300", metalness: 0.0, roughness: 0.25, emissive: "#c26a00", emissiveIntensity: 0.55 },
-        });
-        // Nearly no lateral kick: the yolk should slump straight down, not fly.
-        setTimeout(() => { try { release(yolkId, [0, -0.6, 0]); } catch { /* not registered */ } }, BURST_DELAY_MS);
-        debris.current.push(yolkId);
-      }
-      for (let i = 0; i < SHARDS; i++) {
-        const a = (i / SHARDS) * Math.PI * 2;
-        const r = SCATTER * (0.5 + 0.5 * ((i * 3) % 4) / 4);
-        const shardId = store.addObject({
-          geometry: "custom",
-          customGeometry: makeShard(0.13, i),
-          name: `shard:${heldId}:${i}`,
-          position: [ox + Math.cos(a) * r, oy + 0.1 * (i % 3), oz + Math.sin(a) * r],
-          physics: "dynamic",
-          material: {
-            color: obj.material?.color ?? "#e8e0d0",
-            metalness: 0.05,
-            roughness: 0.85,
-            emissive: "#000000",
-            emissiveIntensity: 0,
-          },
-        });
-        spawned.push({ id: shardId, a });
-      }
-
-      // Fling the shards once Rapier has registered their bodies.
       } catch (e) {
         console.warn("[fragile] debris spawn failed", e);
       }
-      for (const { id } of spawned) debris.current.push(id);
-      // Clear the debris after a few seconds so repeated demos do not litter the scene.
-      const toClear = debris.current.slice();
-      debris.current = [];
-      setTimeout(() => {
-        const st = useEditor.getState();
-        for (const id of toClear) {
-          try { st.select(id); st.deleteSelected(); } catch { /* already gone */ }
-        }
-        st.select(null);
-      }, DEBRIS_TTL_MS);
 
       setTimeout(() => {
-        for (const { id, a } of spawned) {
+        for (const { id, velocity } of spawned) {
           try {
-            release(id, [Math.cos(a) * BURST_SPEED, BURST_LIFT, Math.sin(a) * BURST_SPEED]);
+            release(id, velocity);
           } catch {
-            // Body not registered (object already removed) -- nothing to fling.
+            // Body not registered yet, or already removed.
           }
         }
       }, BURST_DELAY_MS);
+
+      setTimeout(() => {
+        const st = useEditor.getState();
+        for (const { id } of spawned) {
+          try {
+            st.select(id);
+            st.deleteSelected();
+          } catch {
+            // Already removed.
+          }
+        }
+        st.select(null);
+      }, DEBRIS_TTL_MS);
     }, 60);
-    return () => clearInterval(id);
+    return () => clearInterval(tick);
   }, [emg]);
 
   return null;

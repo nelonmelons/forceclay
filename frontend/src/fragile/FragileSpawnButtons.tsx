@@ -5,7 +5,9 @@
  * climbing toward the 85% line makes the cause legible before the egg goes.
  */
 import { useEditor } from "../store/editor";
-import { FRAGILE_PREFIX, makeEgg, makeWillow } from "./fragileGeometry";
+import { FRAGILE_PREFIX } from "./fragileGeometry";
+import { PROPS } from "./propCatalog";
+import { useDemoProps } from "./DemoTable";
 
 const PANEL: React.CSSProperties = {
   position: "fixed", top: 168, right: 16, zIndex: 20,
@@ -28,19 +30,19 @@ export default function FragileSpawnButtons() {
   const addObject = useEditor((s) => s.addObject);
   const select = useEditor((s) => s.select);
   const objects = useEditor((s) => s.objects);
-  const spawn = (kind: "egg" | "willow") => {
+  useDemoProps();
+
+  const spawn = (key: string) => {
+    const spec = PROPS.find((p) => p.key === key);
+    if (!spec) return;
     const id = addObject({
       geometry: "custom",
-      // The `fragile:` name prefix is what FragileWatcher keys off — clay and shards are not
-      // breakable, only things spawned through here.
-      name: `${FRAGILE_PREFIX}${kind}`,
-      customGeometry: kind === "egg" ? makeEgg(0.42) : makeWillow(0.62),
+      // The `fragile:` prefix is what FragileWatcher keys off; clay and debris never burst.
+      name: `${FRAGILE_PREFIX}${spec.key}`,
+      customGeometry: spec.geometry(),
       position: spawnAt(objects.length),
       physics: "dynamic",
-      material:
-        kind === "egg"
-          ? { color: "#f2e6d0", metalness: 0.05, roughness: 0.45, emissive: "#000000", emissiveIntensity: 0 }
-          : { color: "#cfe8c8", metalness: 0.0, roughness: 0.7, emissive: "#1a2a12", emissiveIntensity: 0.25 },
+      material: spec.material,
     });
     select(id);
   };
@@ -48,9 +50,12 @@ export default function FragileSpawnButtons() {
   return (
     <div style={PANEL}>
       <div style={{ fontWeight: 700, fontSize: 12, letterSpacing: 1, marginBottom: 8 }}>FRAGILE</div>
-      <div style={{ display: "flex", gap: 8 }}>
-        <button style={BTN} onClick={() => spawn("egg")}>Egg</button>
-        <button style={BTN} onClick={() => spawn("willow")}>One-wish willow</button>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", maxWidth: 240 }}>
+        {PROPS.map((p) => (
+          <button key={p.key} style={BTN} onClick={() => spawn(p.key)}>
+            {p.label} <span style={{ opacity: 0.55 }}>{Math.round(p.threshold * 100)}%</span>
+          </button>
+        ))}
       </div>
     </div>
   );

@@ -13,6 +13,7 @@ import PhysicsWorld from "../physics/PhysicsWorld";
 import { registerOrbitControls, setOrbitDisabled } from "./orbitControls";
 import { useFusionStatus } from "../control/fusionStatus";
 import { useEditor } from "../store/editor";
+import DemoTable from "../fragile/DemoTable";
 
 export interface ViewportProps {
   children?: ReactNode;
@@ -69,7 +70,10 @@ export default function Viewport({ children }: ViewportProps) {
         fadeDistance={25}
         infiniteGrid
       />
-      <PhysicsWorld>{children}</PhysicsWorld>
+      <PhysicsWorld>
+        <DemoTable />
+        {children}
+      </PhysicsWorld>
       <OrbitDisableOnHandActivity />
     </Canvas>
   );
