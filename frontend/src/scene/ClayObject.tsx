@@ -121,9 +121,10 @@ export function ClayMesh({ object, meshRef, deleteHighlight, onClick }: ClayMesh
   // project) and rendered as a sibling <lineSegments>, so it moves/scales in lockstep with the
   // solid mesh with no extra transform bookkeeping.
   const wireframeGeometry = useMemo(() => new THREE.WireframeGeometry(geometry), [geometry]);
-  // Wire tint: a darker shade of the fill color reads as a subtle outline on any pastel.
+  // Wire tint: a MUCH darker shade of the fill color (was x0.55) reads as a crisp, well-defined
+  // edge/"grid" line on any pastel instead of a faint tint.
   const wireColor = useMemo(
-    () => new THREE.Color(object.material.color).multiplyScalar(0.55),
+    () => new THREE.Color(object.material.color).multiplyScalar(0.3),
     [object.material.color],
   );
 
@@ -137,7 +138,7 @@ export function ClayMesh({ object, meshRef, deleteHighlight, onClick }: ClayMesh
         emissiveIntensity={emissiveIntensity}
       />
       <lineSegments geometry={wireframeGeometry} scale={[1.001, 1.001, 1.001]} raycast={() => null}>
-        <lineBasicMaterial color={wireColor} transparent opacity={0.35} />
+        <lineBasicMaterial color={wireColor} transparent opacity={0.55} />
       </lineSegments>
     </mesh>
   );

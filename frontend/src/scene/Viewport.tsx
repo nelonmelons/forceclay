@@ -14,6 +14,9 @@ import { registerOrbitControls, setOrbitDisabled } from "./orbitControls";
 import { useFusionStatus } from "../control/fusionStatus";
 import { useEditor } from "../store/editor";
 
+/** Sky background color, shared with `fog` (see `Viewport`) so the horizon fade is seamless. */
+const SKY_COLOR = "#a9ccef";
+
 export interface ViewportProps {
   children?: ReactNode;
 }
@@ -45,7 +48,10 @@ function OrbitDisableOnHandActivity() {
  * adding it here does not violate `PhysicsWorld`'s "single owner of rendering" invariant. It is
  * disabled while a transform gizmo or vertex handle is dragging, or while the hand is carrying/
  * warping (see `scene/orbitControls.ts`), so mouse orbit never fights those interactions.
- * `onPointerMissed` deselects on empty-space clicks.
+ * `onPointerMissed` deselects on empty-space clicks. The sky-blue background, `fog`, and the
+ * `Grid`'s fade share the SAME color/falloff so the horizon dissolves seamlessly instead of
+ * cutting off into a flat wall, and the camera's far plane is pushed out to match so distant
+ * geometry isn't clipped before it has a chance to fade.
  */
 export default function Viewport({ children }: ViewportProps) {
   return (
@@ -53,20 +59,33 @@ export default function Viewport({ children }: ViewportProps) {
       style={{ position: "fixed", inset: 0, width: "100vw", height: "100vh", display: "block" }}
       onPointerMissed={() => useEditor.getState().select(null)}
     >
-      <color attach="background" args={["#f4f5f7"]} />
-      <PerspectiveCamera makeDefault position={[0, 3, 5]} fov={50} onUpdate={(c) => c.lookAt(0, 0, 0)} />
+      <color attach="background" args={[SKY_COLOR]} />
+      {/* Distance fog fades far geometry into the same sky color as the background so "seeing
+          into infinity" reads as an airy dissolve rather than an abrupt clip. */}
+      <fog attach="fog" args={[SKY_COLOR, 20, 140]} />
+      <PerspectiveCamera
+        makeDefault
+        position={[0, 3, 5]}
+        fov={50}
+        far={1000}
+        onUpdate={(c) => c.lookAt(0, 0, 0)}
+      />
       <OrbitControls makeDefault enableDamping ref={(instance) => registerOrbitControls(instance)} />
-      {/* Flat, shadowless "playground" lighting: a bright ambient fill plus a soft hemisphere
-          and a low-intensity directional (no castShadow) so shapes still read gentle form. */}
-      <ambientLight intensity={0.9} />
-      <hemisphereLight args={["#ffffff", "#dfe3ea", 0.6]} />
-      <directionalLight position={[5, 8, 5]} intensity={0.35} />
+      {/* Shadowless "playground" lighting, tuned for a bit more form/definition than a flat
+          wash: a softer ambient fill, a brighter hemisphere for open-air color bounce, a
+          stronger key directional light, and a dim cool rim/fill from the opposite side so
+          shapes pick up a gentle gradient without blowing out their pastel fills. */}
+      <ambientLight intensity={0.55} />
+      <hemisphereLight args={["#ffffff", "#dfe3ea", 0.7]} />
+      <directionalLight position={[5, 8, 5]} intensity={0.55} />
+      <directionalLight position={[-6, 3, -4]} intensity={0.18} color="#bcdcf5" />
       <Grid
         args={[20, 20]}
         position={[0, 0, 0]}
         cellColor="#d8dce3"
         sectionColor="#b9c0cc"
-        fadeDistance={25}
+        fadeDistance={120}
+        fadeStrength={1.2}
         infiniteGrid
       />
       <PhysicsWorld>{children}</PhysicsWorld>
