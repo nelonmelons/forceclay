@@ -23,9 +23,10 @@
  *     navigation is fully disabled in these two modes so both hands are free for manipulation.
  *     Rotate: one hand pinching twists the object about the camera's forward axis by the hand's
  *     roll delta; both hands pinching instead tilts/twists it about an arbitrary axis derived
- *     from the change in the vector between the two hands (cursor + depth). Scale: uniform-
- *     scales the object by an exponential function of the hand's depth-proxy delta since
- *     grab-start (pulling the hand back grows the object). Neither mode translates the object.
+ *     from the change in the vector between the two hands (cursor + depth). Scale: with BOTH
+ *     hands pinching, uniform-scales the object by the ratio of the current inter-hand cursor
+ *     distance to the distance at grab-start (pinch-to-zoom: hands apart grow, together shrink).
+ *     Neither mode translates the object.
  *     The mouse gizmo keeps working alongside hand manipulation in both.
  *   - `"edit"` is vertex-handle-owned (`VertexEditHandles`); this hook does not grab/sculpt.
  *
@@ -89,8 +90,6 @@ const THROW_GAIN = 40;
 const PROXIMITY_NDC = 0.28;
 /** Ignore hand-roll deltas smaller than this (radians) so micro-jitter doesn't dribble rotation. */
 const ROTATE_DEADZONE = 0.01;
-/** Sensitivity of pinch-to-scale: exponent applied to the depth-proxy delta since grab-start. */
-const SCALE_SENS = 3.5;
 /** Uniform-scale clamp bounds (multiplier of the object's scale at grab-start). */
 const SCALE_MIN = 0.2;
 const SCALE_MAX = 5;
@@ -164,8 +163,10 @@ export function useFusion(): FusionFrame {
   const manipId = useRef<string | null>(null);
   const manipStartRoll = useRef(0);
   const manipStartRotation = useRef<[number, number, number]>([0, 0, 0]);
-  const manipStartDepth = useRef(0);
   const manipStartScale = useRef<[number, number, number]>([1, 1, 1]);
+  /** Inter-hand cursor distance (px) when both hands began pinching in scale mode; the live
+   *  distance divided by this is the scale factor (two-hand pinch-to-zoom). */
+  const scaleStartDist = useRef(0);
   /** Two-hand rotate: previous frame's (right-hand - left-hand) cursor+depth vector, for
    *  deriving an arbitrary-axis delta rotation. Null whenever both hands aren't pinching. */
   const prevInterHandVec = useRef<THREE.Vector3 | null>(null);
@@ -527,29 +528,29 @@ export function useFusion(): FusionFrame {
         // Physics/store stubs may still throw; fusion loop stays alive regardless.
       }
     } else if (interactionMode === "scale") {
-      // Pinch-and-pull: grab the hovered/target object, pin it, then move the hand toward/away
-      // from the camera to uniform-scale it. No translation/rotation. `depthProxy` shrinks as
-      // the hand gets closer to the camera (bigger on screen), so pulling the hand BACK (away)
-      // raises depthProxy and — per SCALE_SENS's sign — grows the object.
+      // Two-hand pinch-to-zoom: with BOTH hands pinching, grab/pin the target object and scale it
+      // by the ratio of the current inter-hand distance to the distance when both hands started
+      // pinching. Directly proportional (no depth-proxy lag): hands apart = bigger, together =
+      // smaller. Releasing either hand stops scaling; the next two-hand pinch re-snapshots.
       try {
-        if (!manipId.current) {
-          if (targetId && hand?.isPinching) {
+        const bothPinch = !!(hands.left?.isPinching && hands.right?.isPinching);
+        if (bothPinch && hands.left && hands.right) {
+          const L = hands.left.cursorPx;
+          const R = hands.right.cursorPx;
+          const dist = Math.hypot(R.x - L.x, R.y - L.y);
+          if (!manipId.current && targetId) {
             pin(targetId);
             manipId.current = targetId;
-            manipStartDepth.current = hand.depthProxy;
+            scaleStartDist.current = dist > 1 ? dist : 1;
             const obj = editor.objects.find((o) => o.id === targetId);
             manipStartScale.current = obj ? [...obj.scale] : [1, 1, 1];
+          } else if (manipId.current) {
+            const factor = THREE.MathUtils.clamp(dist / scaleStartDist.current, SCALE_MIN, SCALE_MAX);
+            const [sx, sy, sz] = manipStartScale.current;
+            editor.updateTransform(manipId.current, { scale: [sx * factor, sy * factor, sz * factor] });
           }
-        } else if (!hand || !hand.isPinching) {
-          manipId.current = null;
         } else {
-          const factor = THREE.MathUtils.clamp(
-            Math.exp((hand.depthProxy - manipStartDepth.current) * SCALE_SENS),
-            SCALE_MIN,
-            SCALE_MAX,
-          );
-          const [sx, sy, sz] = manipStartScale.current;
-          editor.updateTransform(manipId.current, { scale: [sx * factor, sy * factor, sz * factor] });
+          manipId.current = null;
         }
       } catch {
         // Store stubs may still throw; fusion loop stays alive regardless.
