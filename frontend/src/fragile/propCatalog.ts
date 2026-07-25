@@ -41,6 +41,9 @@ export interface PropSpec {
 
 const CREAM: Mat = { color: "#f7efdd", metalness: 0.02, roughness: 0.55, emissive: "#000000", emissiveIntensity: 0 };
 const YOLK: Mat = { color: "#ffb300", metalness: 0, roughness: 0.25, emissive: "#c26a00", emissiveIntensity: 0.5 };
+const JUICE: Mat = { color: "#ffc247", metalness: 0, roughness: 0.2, emissive: "#8a5a00", emissiveIntensity: 0.4 };
+const PEEL: Mat = { color: "#ffd23f", metalness: 0, roughness: 0.6, emissive: "#000000", emissiveIntensity: 0 };
+const GRAPE: Mat = { color: "#7b3fa0", metalness: 0.05, roughness: 0.3, emissive: "#2a0f3a", emissiveIntensity: 0.3 };
 const KETCHUP: Mat = { color: "#c1121f", metalness: 0, roughness: 0.3, emissive: "#5c0a10", emissiveIntensity: 0.35 };
 const GLASS: Mat = { color: "#d33", metalness: 0.1, roughness: 0.25, emissive: "#000000", emissiveIntensity: 0 };
 
@@ -90,6 +93,28 @@ function spray(n: number, mat: Mat, r: number, speed: number, lift: number): Deb
 }
 
 export const PROPS: PropSpec[] = [
+  {
+    key: "grape",
+    label: "Grape",
+    geometry: () => makeEgg(0.2),
+    material: GRAPE,
+    threshold: 0.15,          // bursts with almost nothing
+    survives: false,
+    debris: () => spray(6, JUICE, 0.05, 1.8, 2.2),
+  },
+  {
+    key: "lemon",
+    label: "Lemon",
+    geometry: () => makeEgg(0.32),
+    material: PEEL,
+    threshold: 0.42,
+    survives: false,
+    debris: () => [
+      ...spray(6, JUICE, 0.055, 2.2, 2.8),
+      { geometry: makeShell(0.32, true), material: PEEL, offset: [0.08, 0.08, 0], velocity: [1.4, 1.2, 0.3] },
+      { geometry: makeShell(0.32, false), material: PEEL, offset: [-0.08, -0.04, 0], velocity: [-1.4, 0.8, -0.3] },
+    ],
+  },
   {
     key: "egg",
     label: "Egg",
