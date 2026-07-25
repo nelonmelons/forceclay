@@ -73,6 +73,14 @@ const PIN_RADIUS = 0.22;
 const PIN_DURATION = 1.5;
 /** Smoothing for the carried object's position (ShapeShift lerps ~0.1; lower = smoother/laggier). */
 const CARRY_LERP = 0.2;
+/** Hand-depth push/pull along the view axis while carrying: world units per unit of depthProxy. */
+const DEPTH_SENS = 6;
+/** Depth change below this is treated as zero — kills the jitter that caused the old drift. */
+const DEPTH_DEADBAND = 0.012;
+/** Max push/pull from the grab depth, world units, so an object can never fly off. */
+const DEPTH_MAX = 3.5;
+/** Smoothing on the depth offset. */
+const DEPTH_LERP = 0.18;
 /** Per-frame carry delta → release/throw velocity (units/sec). */
 const THROW_GAIN = 40;
 /** Screen-space (NDC) radius within which an object counts as hovered/grabbable when the ray
@@ -141,6 +149,10 @@ export function useFusion(): FusionFrame {
   const dragPlane = useRef(new THREE.Plane());
   const dragOffset = useRef(new THREE.Vector3());
   const carryPos = useRef(new THREE.Vector3());
+  /** depthProxy sampled at grab-start; push/pull is measured against this, never accumulated. */
+  const grabDepth = useRef(0);
+  /** Current smoothed push/pull offset along the view axis. */
+  const depthOffset = useRef(0);
   const lastCarryPos = useRef(new THREE.Vector3());
   /** Latches true the instant hold-to-pin auto-pins an object, so the SAME still-active pinch
    *  can't immediately re-grab it and restart the timer at 0. Clears the moment the hand
@@ -358,6 +370,8 @@ export function useFusion(): FusionFrame {
             } else {
               dragOffset.current.set(0, 0, 0);
             }
+            grabDepth.current = hand.depthProxy;
+            depthOffset.current = 0;
             carryPos.current.copy(objWorld);
             lastCarryPos.current.copy(objWorld);
             grab(targetId, [objWorld.x, objWorld.y, objWorld.z]);
@@ -375,13 +389,25 @@ export function useFusion(): FusionFrame {
             // Follow the drag plane, smoothed. lastCarryPos is captured before the lerp so the
             // per-frame delta doubles as throw velocity on release.
             raycaster.setFromCamera(new THREE.Vector2(hand.cursorNdc.x, hand.cursorNdc.y), camera);
-            // Carry on the fixed camera-facing drag plane only. (No hand-depth push/pull: the
-            // hand-size depth proxy is too noisy and made held objects drift toward the camera —
-            // "enlarge" — on their own. The plane keeps a stable grab depth.)
+            // Carry on the camera-facing drag plane, plus hand-depth push/pull along the view
+            // axis so the object can be moved away and back.
+            //
+            // The earlier push/pull drifted toward the camera on its own because it INTEGRATED a
+            // per-frame depthProxy delta — noise accumulates under integration, so a perfectly
+            // still hand still crept. This measures the offset from the depth sampled at
+            // grab-start instead: an absolute mapping cannot accumulate, so a still hand holds
+            // position exactly. A deadband drops jitter and the total is clamped.
             const target = new THREE.Vector3();
             let rawTarget: THREE.Vector3 | null = null;
             if (raycaster.ray.intersectPlane(dragPlane.current, target)) {
               target.add(dragOffset.current);
+
+              const rawDelta = grabDepth.current - hand.depthProxy;
+              const past = Math.max(Math.abs(rawDelta) - DEPTH_DEADBAND, 0) * Math.sign(rawDelta);
+              const wanted = THREE.MathUtils.clamp(past * DEPTH_SENS, -DEPTH_MAX, DEPTH_MAX);
+              depthOffset.current += (wanted - depthOffset.current) * DEPTH_LERP;
+              const viewDir = camera.getWorldDirection(new THREE.Vector3());
+              target.addScaledVector(viewDir, depthOffset.current);
               rawTarget = target;
               lastCarryPos.current.copy(carryPos.current);
               carryPos.current.lerp(target, CARRY_LERP);
