@@ -8,8 +8,8 @@ import { useEditor } from "../store/editor";
 import { FRAGILE_PREFIX } from "./fragileGeometry";
 import { PROPS } from "./propCatalog";
 
+// Positioned by the top-right column wrapper in App.tsx — flows BELOW the toolbar, no overlap.
 const PANEL: React.CSSProperties = {
-  position: "fixed", top: 168, right: 16, zIndex: 20,
   padding: "12px 14px", borderRadius: 12, minWidth: 210,
   background: "rgba(15,15,20,0.72)", color: "#fff",
   fontFamily: "system-ui, sans-serif", backdropFilter: "blur(6px)",

@@ -38,10 +38,25 @@ function App() {
           <HandOverlay />
           <CameraPip />
           <ForceHUD />
-          <Toolbar />
+          {/* Top-right controls stacked in one column so the FRAGILE block always flows BELOW
+              the toolbar (whatever its wrapped height) instead of overlapping it. */}
+          <div
+            style={{
+              position: "fixed",
+              top: 16,
+              right: 16,
+              zIndex: 20,
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+              alignItems: "flex-end",
+            }}
+          >
+            <Toolbar />
+            <FragileSpawnButtons />
+          </div>
           <CalibrationPanel />
           <FragileWatcher />
-          <FragileSpawnButtons />
           <ConnectionStatus />
           <button
             onClick={() => window.dispatchEvent(new Event(SPAWN_EVENT))}
