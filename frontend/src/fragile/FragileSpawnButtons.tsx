@@ -7,7 +7,6 @@
 import { useEditor } from "../store/editor";
 import { FRAGILE_PREFIX } from "./fragileGeometry";
 import { PROPS } from "./propCatalog";
-import { useDemoProps } from "./DemoTable";
 
 const PANEL: React.CSSProperties = {
   position: "fixed", top: 168, right: 16, zIndex: 20,
@@ -30,8 +29,6 @@ export default function FragileSpawnButtons() {
   const addObject = useEditor((s) => s.addObject);
   const select = useEditor((s) => s.select);
   const objects = useEditor((s) => s.objects);
-  useDemoProps();
-
   const spawn = (key: string) => {
     const spec = PROPS.find((p) => p.key === key);
     if (!spec) return;
